@@ -1,0 +1,399 @@
+package handlers
+
+import (
+	"math"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/smart-cafeteria/backend/internal/models"
+)
+
+// SustainabilityMetrics represents sustainability performance metrics
+type SustainabilityMetrics struct {
+	Period                 string  `json:"period"`
+	WasteReductionPercent  float64 `json:"wasteReductionPercent"`
+	FoodUtilizationPercent float64 `json:"foodUtilizationPercent"`
+	CO2SavedKg             float64 `json:"co2SavedKg"`
+	CostSavings            float64 `json:"costSavings"`
+	ForecastAccuracy       float64 `json:"forecastAccuracy"`
+	TotalMealsServed       int     `json:"totalMealsServed"`
+	WastePerMeal           float64 `json:"wastePerMeal"`
+	SustainabilityScore    int     `json:"sustainabilityScore"` // 0-100
+}
+
+// SustainabilityReport represents a detailed sustainability report
+type SustainabilityReport struct {
+	GeneratedAt          time.Time              `json:"generatedAt"`
+	Period               string                 `json:"period"`
+	Metrics              SustainabilityMetrics  `json:"metrics"`
+	WasteTrends          []WasteTrend           `json:"wasteTrends"`
+	Recommendations      []string               `json:"recommendations"`
+	ImprovementAreas     []string               `json:"improvementAreas"`
+	Achievements         []string               `json:"achievements"`
+}
+
+// WasteTrend represents waste data over time
+type WasteTrend struct {
+	Date            string  `json:"date"`
+	WastePercent    float64 `json:"wastePercent"`
+	ForecastAccuracy float64 `json:"forecastAccuracy"`
+}
+
+// GetSustainabilityMetrics returns current sustainability metrics
+func (h *Handler) GetSustainabilityMetrics(c *gin.Context) {
+	days := 30
+	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	endDate := time.Now()
+
+	// Get waste data
+	var wasteLogs []models.WasteLog
+	h.DB.Where("date >= ?", startDate).Find(&wasteLogs)
+
+	var totalPrepared, totalWasted int
+	var totalWeight float64
+	for _, log := range wasteLogs {
+		totalPrepared += log.PreparedQuantity
+		totalWasted += log.WastedQuantity
+		totalWeight += log.WasteWeight
+	}
+
+	// Get forecast accuracy
+	var forecasts []models.DemandForecast
+	h.DB.Where("date >= ? AND actual_demand > 0", startDate).Find(&forecasts)
+
+	var totalPercentageError float64
+	for _, f := range forecasts {
+		if f.ActualDemand > 0 {
+			absError := math.Abs(float64(f.PredictedDemand - f.ActualDemand))
+			totalPercentageError += absError / float64(f.ActualDemand) * 100
+		}
+	}
+
+	forecastAccuracy := 0.0
+	if len(forecasts) > 0 {
+		mape := totalPercentageError / float64(len(forecasts))
+		forecastAccuracy = math.Max(0, 100-mape)
+	}
+
+	// Get total meals served
+	var servedCount int64
+	h.DB.Model(&models.Booking{}).Where("status = ? AND created_at >= ?", "served", startDate).Count(&servedCount)
+
+	// Calculate metrics
+	wastePercent := 0.0
+	if totalPrepared > 0 {
+		wastePercent = float64(totalWasted) / float64(totalPrepared) * 100
+	}
+
+	utilizationPercent := 100 - wastePercent
+
+	// Baseline comparison (assume 20% baseline waste)
+	baselineWaste := 20.0
+	wasteReduction := baselineWaste - wastePercent
+	if wasteReduction < 0 {
+		wasteReduction = 0
+	}
+
+	// CO2 calculation (2.5 kg CO2 per kg food waste saved)
+	wastedWeightSaved := (baselineWaste - wastePercent) / 100 * totalWeight
+	co2Saved := wastedWeightSaved * 2.5
+	if co2Saved < 0 {
+		co2Saved = 0
+	}
+
+	// Cost savings (assuming $5 per unit)
+	costSavings := wastedWeightSaved * 5.0
+	if costSavings < 0 {
+		costSavings = 0
+	}
+
+	// Waste per meal
+	wastePerMeal := 0.0
+	if servedCount > 0 {
+		wastePerMeal = float64(totalWasted) / float64(servedCount)
+	}
+
+	// Sustainability score (weighted average)
+	sustainabilityScore := int(
+		(forecastAccuracy * 0.3) +
+			(utilizationPercent * 0.4) +
+			(wasteReduction * 0.3 * 5), // Scale waste reduction
+	)
+	if sustainabilityScore > 100 {
+		sustainabilityScore = 100
+	}
+
+	metrics := SustainabilityMetrics{
+		Period:                 startDate.Format("2006-01-02") + " to " + endDate.Format("2006-01-02"),
+		WasteReductionPercent:  math.Round(wasteReduction*100) / 100,
+		FoodUtilizationPercent: math.Round(utilizationPercent*100) / 100,
+		CO2SavedKg:             math.Round(co2Saved*100) / 100,
+		CostSavings:            math.Round(costSavings*100) / 100,
+		ForecastAccuracy:       math.Round(forecastAccuracy*100) / 100,
+		TotalMealsServed:       int(servedCount),
+		WastePerMeal:           math.Round(wastePerMeal*100) / 100,
+		SustainabilityScore:    sustainabilityScore,
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+// GetSustainabilityReport returns a detailed sustainability report
+func (h *Handler) GetSustainabilityReport(c *gin.Context) {
+	days := 30
+	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+
+	// Get metrics first
+	var wasteLogs []models.WasteLog
+	h.DB.Where("date >= ?", startDate).Order("date").Find(&wasteLogs)
+
+	var forecasts []models.DemandForecast
+	h.DB.Where("date >= ? AND actual_demand > 0", startDate).Find(&forecasts)
+
+	// Calculate daily trends
+	dailyData := make(map[string]struct {
+		prepared  int
+		wasted    int
+		predicted int
+		actual    int
+	})
+
+	for _, log := range wasteLogs {
+		key := log.Date.Format("2006-01-02")
+		data := dailyData[key]
+		data.prepared += log.PreparedQuantity
+		data.wasted += log.WastedQuantity
+		dailyData[key] = data
+	}
+
+	for _, f := range forecasts {
+		key := f.Date.Format("2006-01-02")
+		data := dailyData[key]
+		data.predicted += f.PredictedDemand
+		data.actual += f.ActualDemand
+		dailyData[key] = data
+	}
+
+	var trends []WasteTrend
+	for date, data := range dailyData {
+		wastePercent := 0.0
+		if data.prepared > 0 {
+			wastePercent = float64(data.wasted) / float64(data.prepared) * 100
+		}
+
+		accuracy := 0.0
+		if data.actual > 0 {
+			error := math.Abs(float64(data.predicted-data.actual)) / float64(data.actual) * 100
+			accuracy = math.Max(0, 100-error)
+		}
+
+		trends = append(trends, WasteTrend{
+			Date:             date,
+			WastePercent:     math.Round(wastePercent*100) / 100,
+			ForecastAccuracy: math.Round(accuracy*100) / 100,
+		})
+	}
+
+	// Calculate overall metrics
+	var totalPrepared, totalWasted int
+	for _, log := range wasteLogs {
+		totalPrepared += log.PreparedQuantity
+		totalWasted += log.WastedQuantity
+	}
+
+	wastePercent := 0.0
+	if totalPrepared > 0 {
+		wastePercent = float64(totalWasted) / float64(totalPrepared) * 100
+	}
+
+	// Generate recommendations
+	var recommendations []string
+	var improvements []string
+	var achievements []string
+
+	if wastePercent > 15 {
+		recommendations = append(recommendations, "Consider reducing preparation quantities for low-demand items")
+		improvements = append(improvements, "Waste percentage is above 15% target")
+	} else {
+		achievements = append(achievements, "Waste percentage is within acceptable limits")
+	}
+
+	// Get forecast accuracy
+	var totalError float64
+	for _, f := range forecasts {
+		if f.ActualDemand > 0 {
+			totalError += math.Abs(float64(f.PredictedDemand-f.ActualDemand)) / float64(f.ActualDemand) * 100
+		}
+	}
+	avgAccuracy := 0.0
+	if len(forecasts) > 0 {
+		avgAccuracy = 100 - (totalError / float64(len(forecasts)))
+	}
+
+	if avgAccuracy < 75 {
+		recommendations = append(recommendations, "Improve demand forecasting by analyzing more contextual factors")
+		improvements = append(improvements, "Forecast accuracy is below 75% threshold")
+	} else {
+		achievements = append(achievements, "Demand forecasting is performing well")
+	}
+
+	if len(recommendations) == 0 {
+		recommendations = append(recommendations, "Continue current practices to maintain good sustainability performance")
+	}
+
+	report := SustainabilityReport{
+		GeneratedAt:      time.Now(),
+		Period:           startDate.Format("2006-01-02") + " to " + time.Now().Format("2006-01-02"),
+		Metrics: SustainabilityMetrics{
+			WasteReductionPercent:  math.Max(0, 20-wastePercent),
+			FoodUtilizationPercent: 100 - wastePercent,
+			ForecastAccuracy:       avgAccuracy,
+			SustainabilityScore:    int((avgAccuracy + (100 - wastePercent)) / 2),
+		},
+		WasteTrends:      trends,
+		Recommendations:  recommendations,
+		ImprovementAreas: improvements,
+		Achievements:     achievements,
+	}
+
+	c.JSON(http.StatusOK, report)
+}
+
+// PreparationRecommendation represents a recommendation for food preparation
+type PreparationRecommendation struct {
+	MealType          models.MealType `json:"mealType"`
+	Date              string          `json:"date"`
+	FoodItem          string          `json:"foodItem"`
+	PredictedDemand   int             `json:"predictedDemand"`
+	RecommendedQty    int             `json:"recommendedQuantity"`
+	HistoricalWaste   float64         `json:"historicalWaste"`
+	Confidence        int             `json:"confidence"`
+	AdjustmentReason  string          `json:"adjustmentReason"`
+}
+
+// GetPreparationRecommendations returns food preparation recommendations
+func (h *Handler) GetPreparationRecommendations(c *gin.Context) {
+	// Default to tomorrow
+	targetDate := time.Now().AddDate(0, 0, 1).Truncate(24 * time.Hour)
+	if dateStr := c.Query("date"); dateStr != "" {
+		if parsed, err := time.Parse("2006-01-02", dateStr); err == nil {
+			targetDate = parsed
+		}
+	}
+
+	// Get forecasts for the target date
+	var forecasts []models.DemandForecast
+	h.DB.Where("date = ?", targetDate).Find(&forecasts)
+
+	// If no forecasts exist, create placeholder forecasts
+	if len(forecasts) == 0 {
+		mealTypes := []models.MealType{models.MealBreakfast, models.MealLunch, models.MealDinner}
+		baseDemands := map[models.MealType]int{
+			models.MealBreakfast: 80,
+			models.MealLunch:     150,
+			models.MealDinner:    120,
+		}
+
+		// Weekend adjustment
+		if targetDate.Weekday() == time.Saturday || targetDate.Weekday() == time.Sunday {
+			for k := range baseDemands {
+				baseDemands[k] = int(float64(baseDemands[k]) * 0.5)
+			}
+		}
+
+		for _, mealType := range mealTypes {
+			forecasts = append(forecasts, models.DemandForecast{
+				Date:            targetDate,
+				MealType:        mealType,
+				PredictedDemand: baseDemands[mealType],
+				Confidence:      75,
+			})
+		}
+	}
+
+	// Get historical waste data to calculate waste factor
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+	var wasteLogs []models.WasteLog
+	h.DB.Where("date >= ?", thirtyDaysAgo).Find(&wasteLogs)
+
+	wasteByMeal := make(map[models.MealType]struct {
+		prepared int
+		wasted   int
+	})
+
+	for _, log := range wasteLogs {
+		data := wasteByMeal[log.MealType]
+		data.prepared += log.PreparedQuantity
+		data.wasted += log.WastedQuantity
+		wasteByMeal[log.MealType] = data
+	}
+
+	// Get popular menu items
+	type itemPopularity struct {
+		name  string
+		count int
+	}
+
+	var bookingItems []models.BookingItem
+	h.DB.Joins("JOIN bookings ON bookings.id = booking_items.booking_id").
+		Where("bookings.created_at >= ?", thirtyDaysAgo).
+		Find(&bookingItems)
+
+	itemCounts := make(map[string]int)
+	for _, item := range bookingItems {
+		itemCounts[item.ItemName] += item.Quantity
+	}
+
+	// Generate recommendations
+	var recommendations []PreparationRecommendation
+
+	for _, forecast := range forecasts {
+		// Calculate historical waste percentage for this meal type
+		wastePercent := 0.0
+		mealData := wasteByMeal[forecast.MealType]
+		if mealData.prepared > 0 {
+			wastePercent = float64(mealData.wasted) / float64(mealData.prepared) * 100
+		}
+
+		// Adjust recommendation based on waste history
+		adjustmentFactor := 1.0
+		adjustmentReason := "Based on demand forecast"
+
+		if wastePercent > 20 {
+			adjustmentFactor = 0.9
+			adjustmentReason = "Reduced by 10% due to high historical waste"
+		} else if wastePercent > 10 {
+			adjustmentFactor = 0.95
+			adjustmentReason = "Reduced by 5% due to moderate waste"
+		} else if wastePercent < 5 {
+			adjustmentFactor = 1.05
+			adjustmentReason = "Increased by 5% due to low waste (high demand efficiency)"
+		}
+
+		recommendedQty := int(float64(forecast.PredictedDemand) * adjustmentFactor)
+
+		// Add general recommendation for the meal
+		recommendations = append(recommendations, PreparationRecommendation{
+			MealType:         forecast.MealType,
+			Date:             targetDate.Format("2006-01-02"),
+			FoodItem:         "Total Servings",
+			PredictedDemand:  forecast.PredictedDemand,
+			RecommendedQty:   recommendedQty,
+			HistoricalWaste:  math.Round(wastePercent*100) / 100,
+			Confidence:       forecast.Confidence,
+			AdjustmentReason: adjustmentReason,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"date":            targetDate.Format("2006-01-02"),
+		"dayOfWeek":       targetDate.Weekday().String(),
+		"recommendations": recommendations,
+		"notes": []string{
+			"Recommendations are based on demand forecasts and historical waste data",
+			"Adjust quantities based on special events or known schedule changes",
+			"Monitor actual demand to improve future recommendations",
+		},
+	})
+}

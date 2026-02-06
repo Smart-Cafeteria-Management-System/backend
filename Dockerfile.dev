@@ -1,0 +1,18 @@
+# Development with hot reload
+FROM golang:1.23-alpine
+
+WORKDIR /app
+
+# Install Air for hot reloading (v1.52.0 works with Go 1.23)
+RUN go install github.com/cosmtrek/air@v1.52.0
+
+# Install dependencies
+RUN apk add --no-cache gcc musl-dev
+
+# Copy go mod file
+COPY go.mod ./
+RUN go mod download || true
+
+# Source code will be mounted via volume
+# Run go mod tidy first to generate go.sum, then start air
+CMD sh -c "go mod tidy && air -c .air.toml"
