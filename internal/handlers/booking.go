@@ -189,7 +189,7 @@ func (h *Handler) UpdateBooking(c *gin.Context) {
 	}
 
 	var booking models.Booking
-	if err := h.DB.First(&booking, "id = ?", id).Error; err != nil {
+	if err := h.DB.Preload("Slot").First(&booking, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Booking not found"})
 		return
 	}
@@ -202,10 +202,25 @@ func (h *Handler) UpdateBooking(c *gin.Context) {
 
 	// Handle status update
 	if status, ok := req["status"].(string); ok {
+		oldStatus := booking.Status
 		booking.Status = models.BookingStatus(status)
-		if status == "served" {
+
+		if status == "served" && oldStatus != models.BookingServed {
 			now := time.Now()
 			booking.ServedAt = &now
+			// Award attendance points
+			h.AwardAttendancePoints(
+				booking.UserID,
+				booking.ID,
+				booking.SlotID,
+				booking.Slot.HasIncentive,
+				booking.Slot.IncentivePoints,
+			)
+		}
+
+		if status == "no-show" && oldStatus != models.BookingNoShow {
+			// Record no-show penalty
+			h.RecordNoShow(booking.UserID, booking.ID, booking.SlotID)
 		}
 	}
 

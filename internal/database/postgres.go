@@ -38,7 +38,7 @@ func Connect() (*gorm.DB, error) {
 // AutoMigrate runs database migrations
 func AutoMigrate(db *gorm.DB) error {
 	log.Println("Running database migrations...")
-	
+
 	return db.AutoMigrate(
 		&models.User{},
 		&models.MenuItem{},
@@ -49,5 +49,13 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.DemandForecast{},
 		&models.Analytics{},
 		&models.WasteLog{},
+		// Incentive system models
+		&models.IncentiveRule{},
+		&models.UserPoints{},
+		&models.PointTransaction{},
+		&models.AttendanceLog{},
+		// Addon redemption models
+		&models.Addon{},
+		&models.AddonRedemption{},
 	)
 }

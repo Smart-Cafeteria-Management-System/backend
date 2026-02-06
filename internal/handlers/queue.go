@@ -19,16 +19,24 @@ type QueueStatusResponse struct {
 	RecentlyCalled   []models.QueueToken `json:"recentlyCalled"`
 }
 
+// getTodayRange returns start and end times for today in local timezone
+func getTodayRange() (time.Time, time.Time) {
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	end := start.AddDate(0, 0, 1)
+	return start, end
+}
+
 // GetQueueStatus returns the current queue status
 func (h *Handler) GetQueueStatus(c *gin.Context) {
-	today := time.Now().Truncate(24 * time.Hour)
+	todayStart, todayEnd := getTodayRange()
 
 	// Fetch waiting tokens
 	var waitingTokens []models.QueueToken
 	if err := h.DB.Preload("User").Preload("Booking").
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
-		Where("meal_slots.date = ?", today).
+		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
 		Where("queue_tokens.status = ?", "waiting").
 		Order("queue_tokens.created_at").
 		Find(&waitingTokens).Error; err != nil {
@@ -41,7 +49,7 @@ func (h *Handler) GetQueueStatus(c *gin.Context) {
 	if err := h.DB.Preload("User").Preload("Booking").
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
-		Where("meal_slots.date = ?", today).
+		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
 		Where("queue_tokens.status = ?", "called").
 		Order("queue_tokens.called_at DESC").
 		Find(&recentlyCalled).Error; err != nil {
@@ -75,14 +83,14 @@ func (h *Handler) GetMyToken(c *gin.Context) {
 		return
 	}
 
-	today := time.Now().Truncate(24 * time.Hour)
+	todayStart, todayEnd := getTodayRange()
 
 	var token models.QueueToken
 	err := h.DB.Preload("Booking").Preload("Booking.Slot").
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
 		Where("queue_tokens.user_id = ?", userID).
-		Where("meal_slots.date = ?", today).
+		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
 		Where("queue_tokens.status IN ?", []string{"waiting", "called"}).
 		First(&token).Error
 
@@ -97,7 +105,7 @@ func (h *Handler) GetMyToken(c *gin.Context) {
 	h.DB.Model(&models.QueueToken{}).
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
-		Where("meal_slots.date = ?", today).
+		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
 		Where("queue_tokens.status = ?", "waiting").
 		Where("queue_tokens.created_at < ?", token.CreatedAt).
 		Count(&position)
@@ -111,13 +119,13 @@ func (h *Handler) GetMyToken(c *gin.Context) {
 
 // GetQueueHistory returns the queue history for today
 func (h *Handler) GetQueueHistory(c *gin.Context) {
-	today := time.Now().Truncate(24 * time.Hour)
+	todayStart, todayEnd := getTodayRange()
 
 	var tokens []models.QueueToken
 	if err := h.DB.Preload("User").Preload("Booking").
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
-		Where("meal_slots.date = ?", today).
+		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
 		Order("queue_tokens.created_at DESC").
 		Limit(50).
 		Find(&tokens).Error; err != nil {
@@ -130,22 +138,14 @@ func (h *Handler) GetQueueHistory(c *gin.Context) {
 
 // CallNextToken calls the next token in queue (admin only)
 func (h *Handler) CallNextToken(c *gin.Context) {
-	today := time.Now().Truncate(24 * time.Hour)
-
-	// Mark any currently called tokens as waiting (reset)
-	h.DB.Model(&models.QueueToken{}).
-		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
-		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
-		Where("meal_slots.date = ?", today).
-		Where("queue_tokens.status = ?", "called").
-		Update("status", "waiting")
+	todayStart, todayEnd := getTodayRange()
 
 	// Get the next waiting token
 	var token models.QueueToken
 	if err := h.DB.Preload("User").Preload("Booking.Items").
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
-		Where("meal_slots.date = ?", today).
+		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
 		Where("queue_tokens.status = ?", "waiting").
 		Order("queue_tokens.created_at").
 		First(&token).Error; err != nil {
@@ -174,7 +174,7 @@ func (h *Handler) CallNextToken(c *gin.Context) {
 	c.JSON(http.StatusOK, token)
 }
 
-// ServeToken marks a token as served (admin only)
+// ServeToken marks a token as served and awards points
 func (h *Handler) ServeToken(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -183,7 +183,7 @@ func (h *Handler) ServeToken(c *gin.Context) {
 	}
 
 	var token models.QueueToken
-	if err := h.DB.First(&token, "id = ?", id).Error; err != nil {
+	if err := h.DB.Preload("Booking").Preload("Booking.Slot").First(&token, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
 		return
 	}
@@ -212,6 +212,16 @@ func (h *Handler) ServeToken(c *gin.Context) {
 
 	tx.Commit()
 
+	// Award points (after commit) - check if booking was preloaded using ID check
+	if token.Booking.ID != uuid.Nil && token.Booking.Slot.ID != uuid.Nil {
+		h.AwardAttendancePoints(
+			token.UserID,
+			token.BookingID,
+			token.Booking.SlotID,
+			token.Booking.Slot.HasIncentive,
+			token.Booking.Slot.IncentivePoints,
+		)
+	}
+
 	c.JSON(http.StatusOK, token)
 }
-

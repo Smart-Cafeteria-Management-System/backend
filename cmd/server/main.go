@@ -163,14 +163,45 @@ func main() {
 			analytics.GET("/demand-trends", h.GetTrends) // Alias for frontend
 			analytics.GET("/summary", h.GetDashboard)    // Alias for frontend
 		}
+
+		// Incentive routes
+		incentives := protected.Group("/incentives")
+		{
+			// User routes
+			incentives.GET("/my-points", h.GetMyPoints)
+			incentives.GET("/my-history", h.GetPointsHistory)
+			incentives.GET("/status", h.GetIncentiveStatus)
+
+			// Admin routes
+			incentives.GET("/rules", middleware.AdminOnly(), h.GetIncentiveRules)
+			incentives.POST("/rules", middleware.AdminOnly(), h.CreateIncentiveRule)
+			incentives.PUT("/rules/:id", middleware.AdminOnly(), h.UpdateIncentiveRule)
+			incentives.DELETE("/rules/:id", middleware.AdminOnly(), h.DeleteIncentiveRule)
+			incentives.GET("/abuse-report", middleware.AdminOnly(), h.GetAbuseReport)
+			incentives.POST("/apply-to-slots", middleware.AdminOnly(), h.ApplyIncentivesToSlots)
+		}
+
+		// Addon routes
+		addons := protected.Group("/addons")
+		{
+			// User routes
+			addons.GET("", h.GetAddons)
+			addons.POST("/:id/redeem", h.RedeemAddon)
+			addons.GET("/my-redemptions", h.GetMyRedemptions)
+
+			// Admin routes
+			addons.POST("", middleware.AdminOnly(), h.CreateAddon)
+			addons.PUT("/:id", middleware.AdminOnly(), h.UpdateAddon)
+			addons.DELETE("/:id", middleware.AdminOnly(), h.DeleteAddon)
+			addons.POST("/claim", middleware.AdminOnly(), h.ClaimRedemption) // Staff verifies code
+		}
 	}
 
 	// Get port from environment or default
 	port := config.GetEnv("PORT", "5000")
 	log.Printf("Server starting on port %s", port)
-	
+
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
-

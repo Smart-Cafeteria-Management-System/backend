@@ -27,16 +27,18 @@ const (
 
 // MealSlot represents a bookable meal time slot
 type MealSlot struct {
-	ID          uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"_id"`
-	Date        time.Time  `gorm:"type:date;not null" json:"date"`
-	MealType    MealType   `gorm:"type:varchar(20);not null" json:"mealType"`
-	StartTime   string     `gorm:"size:10;not null" json:"startTime"`
-	EndTime     string     `gorm:"size:10;not null" json:"endTime"`
-	Capacity    int        `gorm:"default:50;not null" json:"capacity"`
-	BookedCount int        `gorm:"default:0" json:"bookedCount"`
-	Status      SlotStatus `gorm:"type:varchar(20);default:'available'" json:"status"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	ID              uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"_id"`
+	Date            time.Time  `gorm:"type:date;not null" json:"date"`
+	MealType        MealType   `gorm:"type:varchar(20);not null" json:"mealType"`
+	StartTime       string     `gorm:"size:10;not null" json:"startTime"`
+	EndTime         string     `gorm:"size:10;not null" json:"endTime"`
+	Capacity        int        `gorm:"default:50;not null" json:"capacity"`
+	BookedCount     int        `gorm:"default:0" json:"bookedCount"`
+	Status          SlotStatus `gorm:"type:varchar(20);default:'available'" json:"status"`
+	HasIncentive    bool       `gorm:"default:false" json:"hasIncentive"`
+	IncentivePoints int        `gorm:"default:0" json:"incentivePoints"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
 
 	// Relationships
 	Bookings []Booking `gorm:"foreignKey:SlotID" json:"bookings,omitempty"`

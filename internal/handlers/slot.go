@@ -11,10 +11,13 @@ import (
 
 // GetTodaySlots returns meal slots for today
 func (h *Handler) GetTodaySlots(c *gin.Context) {
-	today := time.Now().Truncate(24 * time.Hour)
-	
+	// Get today's date at midnight in local timezone
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	todayEnd := todayStart.AddDate(0, 0, 1)
+
 	var slots []models.MealSlot
-	if err := h.DB.Where("date = ?", today).Order("start_time").Find(&slots).Error; err != nil {
+	if err := h.DB.Where("date >= ? AND date < ?", todayStart, todayEnd).Order("start_time").Find(&slots).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch slots"})
 		return
 	}
@@ -74,7 +77,9 @@ func (h *Handler) CreateSlot(c *gin.Context) {
 		return
 	}
 
-	date, err := time.Parse("2006-01-02", req.Date)
+	// Parse date in local timezone
+	loc := time.Now().Location()
+	date, err := time.ParseInLocation("2006-01-02", req.Date, loc)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format, use YYYY-MM-DD"})
 		return
@@ -166,13 +171,15 @@ func (h *Handler) GenerateSlots(c *gin.Context) {
 		return
 	}
 
-	startDate, err := time.Parse("2006-01-02", req.StartDate)
+	// Parse dates in local timezone
+	loc := time.Now().Location()
+	startDate, err := time.ParseInLocation("2006-01-02", req.StartDate, loc)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid start date format"})
 		return
 	}
 
-	endDate, err := time.Parse("2006-01-02", req.EndDate)
+	endDate, err := time.ParseInLocation("2006-01-02", req.EndDate, loc)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid end date format"})
 		return
@@ -223,4 +230,3 @@ func (h *Handler) GenerateSlots(c *gin.Context) {
 		"slots":   createdSlots,
 	})
 }
-
