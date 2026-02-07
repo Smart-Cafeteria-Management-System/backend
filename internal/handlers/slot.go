@@ -186,8 +186,19 @@ func (h *Handler) GenerateSlots(c *gin.Context) {
 	}
 
 	capacity := req.Capacity
-	if capacity == 0 {
-		capacity = 50
+	useMLForecasts := capacity == 0 // If no capacity specified, use ML forecasts
+
+	// Load forecasts for this date range if using ML
+	forecastMap := make(map[string]int)
+	if useMLForecasts {
+		var forecasts []models.DemandForecast
+		h.DB.Where("date >= ? AND date <= ?", startDate, endDate).Find(&forecasts)
+
+		for _, f := range forecasts {
+			key := f.Date.Format("2006-01-02") + "_" + string(f.MealType)
+			// Use 120% of predicted demand as capacity to provide buffer
+			forecastMap[key] = int(float64(f.PredictedDemand) * 1.2)
+		}
 	}
 
 	// Define standard slots
@@ -210,12 +221,29 @@ func (h *Handler) GenerateSlots(c *gin.Context) {
 				continue // Skip if exists
 			}
 
+			// Determine capacity
+			slotCapacity := capacity
+			if useMLForecasts {
+				key := d.Format("2006-01-02") + "_" + string(template.MealType)
+				if forecastCapacity, exists := forecastMap[key]; exists && forecastCapacity > 0 {
+					slotCapacity = forecastCapacity
+				} else {
+					// No forecast found, use default
+					slotCapacity = 50
+				}
+			}
+
+			// Ensure minimum capacity
+			if slotCapacity == 0 {
+				slotCapacity = 50
+			}
+
 			slot := models.MealSlot{
 				Date:      d,
 				MealType:  template.MealType,
 				StartTime: template.StartTime,
 				EndTime:   template.EndTime,
-				Capacity:  capacity,
+				Capacity:  slotCapacity,
 				Status:    models.SlotAvailable,
 			}
 			if err := h.DB.Create(&slot).Error; err == nil {
@@ -225,8 +253,9 @@ func (h *Handler) GenerateSlots(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message": "Slots generated successfully",
-		"count":   len(createdSlots),
-		"slots":   createdSlots,
+		"message":       "Slots generated successfully",
+		"count":         len(createdSlots),
+		"usedForecasts": useMLForecasts,
+		"slots":         createdSlots,
 	})
 }
