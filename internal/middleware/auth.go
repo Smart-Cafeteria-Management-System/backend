@@ -81,6 +81,27 @@ func AdminOnly() gin.HandlerFunc {
 	}
 }
 
+// StaffOrAdmin middleware allows both staff and admin users
+func StaffOrAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("role")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			c.Abort()
+			return
+		}
+
+		userRole := role.(models.UserRole)
+		if userRole != models.RoleAdmin && userRole != models.RoleStaff {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Staff or admin access required"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
 // GetUserID extracts user ID from context
 func GetUserID(c *gin.Context) (uuid.UUID, bool) {
 	userID, exists := c.Get("userID")

@@ -116,8 +116,8 @@ func main() {
 			queue.GET("/status", h.GetQueueStatus)
 			queue.GET("/my-token", h.GetMyToken)
 			queue.GET("/history", h.GetQueueHistory)
-			queue.POST("/call-next", middleware.AdminOnly(), h.CallNextToken)
-			queue.PUT("/:id/serve", middleware.AdminOnly(), h.ServeToken)
+			queue.POST("/call-next", middleware.StaffOrAdmin(), h.CallNextToken)
+			queue.PUT("/:id/serve", middleware.StaffOrAdmin(), h.ServeToken)
 		}
 
 		// Forecasts routes
