@@ -383,6 +383,128 @@ func Seed(db *gorm.DB) error {
 		}
 	}
 
+	// 6. Seed Free Add-ons
+	var addonCount int64
+	db.Model(&models.Addon{}).Count(&addonCount)
+	if addonCount == 0 {
+		log.Println("Seeding free add-ons...")
+		addons := []models.Addon{
+			// Beverages
+			{
+				Name:        "Masala Chai",
+				Description: "A warm cup of spiced Indian tea with milk",
+				PointsCost:  3,
+				Category:    "beverage",
+				Available:   true,
+			},
+			{
+				Name:        "Filter Coffee",
+				Description: "Traditional South Indian filter coffee",
+				PointsCost:  4,
+				Category:    "beverage",
+				Available:   true,
+			},
+			{
+				Name:        "Buttermilk",
+				Description: "Refreshing spiced buttermilk (chaas)",
+				PointsCost:  2,
+				Category:    "beverage",
+				Available:   true,
+			},
+			{
+				Name:        "Fresh Lime Juice",
+				Description: "Chilled lime juice with a hint of mint",
+				PointsCost:  3,
+				Category:    "beverage",
+				Available:   true,
+			},
+			{
+				Name:        "Mango Lassi",
+				Description: "Creamy yogurt-based mango smoothie",
+				PointsCost:  5,
+				Category:    "beverage",
+				Available:   true,
+			},
+			// Snacks
+			{
+				Name:        "Papad",
+				Description: "Crispy roasted papad with pickle",
+				PointsCost:  2,
+				Category:    "snack",
+				Available:   true,
+			},
+			{
+				Name:        "Samosa",
+				Description: "Crispy pastry filled with spiced potatoes",
+				PointsCost:  5,
+				Category:    "snack",
+				Available:   true,
+			},
+			{
+				Name:        "Vada",
+				Description: "Crispy fried lentil donut with chutney",
+				PointsCost:  4,
+				Category:    "snack",
+				Available:   true,
+			},
+			{
+				Name:        "Bread Pakora",
+				Description: "Deep-fried spiced bread fritters",
+				PointsCost:  4,
+				Category:    "snack",
+				Available:   true,
+			},
+			{
+				Name:        "Bhel Puri",
+				Description: "Tangy puffed rice snack with vegetables",
+				PointsCost:  3,
+				Category:    "snack",
+				Available:   true,
+			},
+			// Desserts
+			{
+				Name:        "Gulab Jamun",
+				Description: "Soft milk dumplings soaked in sugar syrup",
+				PointsCost:  5,
+				Category:    "dessert",
+				Available:   true,
+			},
+			{
+				Name:        "Rasgulla",
+				Description: "Soft cottage cheese balls in light syrup",
+				PointsCost:  5,
+				Category:    "dessert",
+				Available:   true,
+			},
+			{
+				Name:        "Jalebi",
+				Description: "Crispy spiral-shaped sweet soaked in saffron syrup",
+				PointsCost:  4,
+				Category:    "dessert",
+				Available:   true,
+			},
+			// Fruits
+			{
+				Name:        "Fresh Fruit Bowl",
+				Description: "Seasonal fresh fruit mix (banana, apple, orange)",
+				PointsCost:  3,
+				Category:    "fruit",
+				Available:   true,
+			},
+			{
+				Name:        "Sliced Watermelon",
+				Description: "Chilled watermelon slices - perfect for summer",
+				PointsCost:  2,
+				Category:    "fruit",
+				Available:   true,
+			},
+		}
+
+		for _, addon := range addons {
+			db.Create(&addon)
+		}
+	}
+
 	log.Println("Database seeding check completed successfully!")
 	return nil
 }
