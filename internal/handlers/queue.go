@@ -33,11 +33,11 @@ func (h *Handler) GetQueueStatus(c *gin.Context) {
 
 	// Fetch waiting tokens
 	var waitingTokens []models.QueueToken
-	if err := h.DB.Preload("User").Preload("Booking").
+	if err := h.DB.Preload("User").Preload("Booking.Items.MenuItem").
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
 		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
-		Where("queue_tokens.status = ?", "waiting").
+		Where("queue_tokens.status = ?", models.TokenWaiting).
 		Order("queue_tokens.created_at").
 		Find(&waitingTokens).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch queue status"})
@@ -46,11 +46,11 @@ func (h *Handler) GetQueueStatus(c *gin.Context) {
 
 	// Fetch recently called tokens (called but not yet served)
 	var recentlyCalled []models.QueueToken
-	if err := h.DB.Preload("User").Preload("Booking").
+	if err := h.DB.Preload("User").Preload("Booking.Items.MenuItem").
 		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
 		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
 		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
-		Where("queue_tokens.status = ?", "called").
+		Where("queue_tokens.status = ?", models.TokenCalled).
 		Order("queue_tokens.called_at DESC").
 		Find(&recentlyCalled).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch called tokens"})
@@ -64,10 +64,24 @@ func (h *Handler) GetQueueStatus(c *gin.Context) {
 		currentlyServing = &recentlyCalled[0]
 	}
 
+	// Calculate accurate average wait time for the queue
+	totalPrepTime := 0
+	for _, t := range waitingTokens {
+		for _, item := range t.Booking.Items {
+			totalPrepTime += item.MenuItem.PreparationTime * item.Quantity
+		}
+		totalPrepTime += 1 // Handover buffer
+	}
+
+	avgWait := 0
+	if waitingCount > 0 {
+		avgWait = totalPrepTime
+	}
+
 	response := QueueStatusResponse{
 		CurrentlyServing: currentlyServing,
 		WaitingCount:     waitingCount,
-		AvgWaitTime:      int(waitingCount) * 2, // 2 min per person estimate
+		AvgWaitTime:      avgWait,
 		WaitingTokens:    waitingTokens,
 		RecentlyCalled:   recentlyCalled,
 	}
@@ -110,10 +124,40 @@ func (h *Handler) GetMyToken(c *gin.Context) {
 		Where("queue_tokens.created_at < ?", token.CreatedAt).
 		Count(&position)
 
+	// Calculate dynamic wait time based on preparation times of people ahead
+	var aheadTokens []models.QueueToken
+	h.DB.Preload("Booking.Items.MenuItem").
+		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
+		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
+		Where("meal_slots.date >= ? AND meal_slots.date < ?", todayStart, todayEnd).
+		Where("queue_tokens.status = ?", models.TokenWaiting).
+		Where("queue_tokens.created_at < ?", token.CreatedAt).
+		Find(&aheadTokens)
+
+	dynamicWait := 0
+	for _, t := range aheadTokens {
+		tokenPrepTime := 0
+		for _, item := range t.Booking.Items {
+			tokenPrepTime += item.MenuItem.PreparationTime * item.Quantity
+		}
+		dynamicWait += tokenPrepTime + 1 // Add 1 min handover buffer per token
+	}
+
+	// Add current user's items prep time
+	var currentBooking models.Booking
+	h.DB.Preload("Items.MenuItem").First(&currentBooking, "id = ?", token.BookingID)
+	for _, item := range currentBooking.Items {
+		dynamicWait += item.MenuItem.PreparationTime * item.Quantity
+	}
+
+	if dynamicWait < 2 {
+		dynamicWait = 2 // Minimum 2 minutes
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"token":         token,
-		"position":      position + 1,
-		"estimatedWait": (position + 1) * 2, // 2 min per person
+		"position":      len(aheadTokens) + 1,
+		"estimatedWait": dynamicWait,
 	})
 }
 

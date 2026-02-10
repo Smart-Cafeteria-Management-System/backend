@@ -106,13 +106,32 @@ func (h *Handler) CreateBooking(c *gin.Context) {
 	// Start transaction
 	tx := h.DB.Begin()
 
+	// Calculate preparation time for current items and fetch wait time from queue
+	totalItemPrepTime := 0
+	for _, reqItem := range req.MenuItems {
+		var menuItem models.MenuItem
+		if err := h.DB.First(&menuItem, "id = ?", reqItem.ItemID).Error; err == nil {
+			qty := reqItem.Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+			totalItemPrepTime += menuItem.PreparationTime * qty
+		}
+	}
+
+	// Base wait time = (people ahead * 2 min) + current items prep time
+	predictedWait := (slot.BookedCount * 2) + totalItemPrepTime
+	if predictedWait < 2 {
+		predictedWait = 2 // Minimum 2 minutes
+	}
+
 	// Create booking
 	booking := models.Booking{
 		UserID:            userID,
 		SlotID:            slotID,
 		TokenNumber:       tokenNumber,
 		Status:            models.BookingConfirmed,
-		PredictedWaitTime: (slot.BookedCount + 1) * 2, // 2 min per person estimate
+		PredictedWaitTime: predictedWait,
 	}
 
 	if err := tx.Create(&booking).Error; err != nil {
@@ -131,7 +150,7 @@ func (h *Handler) CreateBooking(c *gin.Context) {
 		}
 
 		quantity := item.Quantity
-		if quantity == 0 {
+		if quantity <= 0 {
 			quantity = 1
 		}
 
