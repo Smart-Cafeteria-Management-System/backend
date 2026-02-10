@@ -175,3 +175,142 @@ func (h *Handler) GetTrends(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
+
+// DailyWaste represents daily waste data
+type DailyWaste struct {
+	Date            string  `json:"date"`
+	WastePercentage float64 `json:"wastePercentage"`
+}
+
+// WasteReportResponse represents waste report data
+type WasteReportResponse struct {
+	AvgWastePercentage float64      `json:"avgWastePercentage"`
+	Trend              string       `json:"trend"` // "good", "moderate", "bad"
+	WasteData          []DailyWaste `json:"wasteData"`
+}
+
+// GetWasteReport returns waste report for the last 7 days
+func (h *Handler) GetWasteReport(c *gin.Context) {
+	// Get last 7 days of waste data
+	var wasteData []DailyWaste
+	var totalWastePercentage float64
+	var validDays int
+
+	for i := 6; i >= 0; i-- {
+		date := time.Now().AddDate(0, 0, -i).Truncate(24 * time.Hour)
+
+		var logs []models.WasteLog
+		h.DB.Where("date = ?", date).Find(&logs)
+
+		var totalPrepared, totalWasted int
+		for _, log := range logs {
+			totalPrepared += log.PreparedQuantity
+			totalWasted += log.WastedQuantity
+		}
+
+		wastePercentage := 0.0
+		if totalPrepared > 0 {
+			wastePercentage = float64(totalWasted) / float64(totalPrepared) * 100
+			totalWastePercentage += wastePercentage
+			validDays++
+		}
+
+		wasteData = append(wasteData, DailyWaste{
+			Date:            date.Format("2006-01-02"),
+			WastePercentage: wastePercentage,
+		})
+	}
+
+	// Calculate average waste percentage
+	avgWastePercentage := 0.0
+	if validDays > 0 {
+		avgWastePercentage = totalWastePercentage / float64(validDays)
+	}
+
+	// Determine trend
+	trend := "good"
+	if avgWastePercentage >= 20 {
+		trend = "bad"
+	} else if avgWastePercentage >= 10 {
+		trend = "moderate"
+	}
+
+	response := WasteReportResponse{
+		AvgWastePercentage: avgWastePercentage,
+		Trend:              trend,
+		WasteData:          wasteData,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// AnalyticsSummaryResponse represents the analytics summary data
+type AnalyticsSummaryResponse struct {
+	TotalUsers      int     `json:"totalUsers"`
+	TotalBookings   int     `json:"totalBookings"`
+	TodayBookings   int     `json:"todayBookings"`
+	PeakHour        *string `json:"peakHour"`
+	AvgDailyBookings int    `json:"avgDailyBookings"`
+}
+
+// GetAnalyticsSummary returns summary statistics for analytics page
+func (h *Handler) GetAnalyticsSummary(c *gin.Context) {
+	today := time.Now().Truncate(24 * time.Hour)
+
+	// Get total users count
+	var totalUsers int64
+	h.DB.Model(&models.User{}).Count(&totalUsers)
+
+	// Get total bookings count (all time)
+	var totalBookings int64
+	h.DB.Model(&models.Booking{}).Count(&totalBookings)
+
+	// Get today's bookings count
+	var todayBookings int64
+	h.DB.Model(&models.Booking{}).
+		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
+		Where("meal_slots.date = ?", today).
+		Count(&todayBookings)
+
+	// Calculate peak hour (most bookings by hour)
+	var peakHour *string
+	var peakResult struct {
+		Hour  int
+		Count int64
+	}
+	h.DB.Raw(`
+		SELECT EXTRACT(HOUR FROM meal_slots.start_time) as hour, COUNT(*) as count
+		FROM bookings
+		JOIN meal_slots ON meal_slots.id = bookings.slot_id
+		WHERE meal_slots.date = ?
+		GROUP BY hour
+		ORDER BY count DESC
+		LIMIT 1
+	`, today).Scan(&peakResult)
+	
+	if peakResult.Count > 0 {
+		hourStr := time.Date(0, 1, 1, peakResult.Hour, 0, 0, 0, time.UTC).Format("3PM")
+		peakHour = &hourStr
+	}
+
+	// Calculate average daily bookings (last 30 days)
+	var avgDailyBookings float64
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Truncate(24 * time.Hour)
+	var recentBookings int64
+	h.DB.Model(&models.Booking{}).
+		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
+		Where("meal_slots.date >= ?", thirtyDaysAgo).
+		Count(&recentBookings)
+	avgDailyBookings = float64(recentBookings) / 30.0
+
+	response := AnalyticsSummaryResponse{
+		TotalUsers:       int(totalUsers),
+		TotalBookings:    int(totalBookings),
+		TodayBookings:    int(todayBookings),
+		PeakHour:         peakHour,
+		AvgDailyBookings: int(avgDailyBookings),
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+

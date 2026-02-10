@@ -160,8 +160,9 @@ func main() {
 		{
 			analytics.GET("/dashboard", h.GetDashboard)
 			analytics.GET("/trends", h.GetTrends)
-			analytics.GET("/demand-trends", h.GetTrends) // Alias for frontend
-			analytics.GET("/summary", h.GetDashboard)    // Alias for frontend
+			analytics.GET("/demand-trends", h.GetTrends)           // Alias for frontend
+			analytics.GET("/summary", h.GetAnalyticsSummary)       // Analytics summary
+			analytics.GET("/waste-report", h.GetWasteReport)       // Waste report for frontend
 		}
 
 		// Incentive routes
