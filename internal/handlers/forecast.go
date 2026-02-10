@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"math"
 	"net/http"
 	"time"
@@ -76,9 +77,12 @@ func (h *Handler) GetWeekForecasts(c *gin.Context) {
 	var forecasts []models.DemandForecast
 	if err := h.DB.Where("date >= ? AND date <= ?", today, weekEnd).
 		Order("date, meal_type").Find(&forecasts).Error; err != nil {
+		log.Printf("Error fetching forecasts: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch forecasts"})
 		return
 	}
+
+	log.Printf("Found %d forecasts for week range", len(forecasts))
 
 	// Generate forecasts for missing days
 	forecastMap := make(map[string]bool)
