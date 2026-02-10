@@ -69,7 +69,9 @@ func (h *Handler) GetTodayForecasts(c *gin.Context) {
 	c.JSON(http.StatusOK, forecasts)
 }
 
-// GetWeekForecasts returns forecasts for the next 7 days
+// GetWeekForecasts provides a rolling 7-day outlook of expected student demand.
+// It integrates existing forecast data with intelligent 'Auto-Generation' for missing gaps,
+// ensuring staff can always plan a full week ahead.
 func (h *Handler) GetWeekForecasts(c *gin.Context) {
 	today := time.Now().Truncate(24 * time.Hour)
 	weekEnd := today.AddDate(0, 0, 7)

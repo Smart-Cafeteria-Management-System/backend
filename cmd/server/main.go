@@ -16,18 +16,19 @@ func main() {
 	// Load .env file if exists (for local development)
 	godotenv.Load()
 
-	// Initialize database
+	// Initialize database connection to Supabase (PostgreSQL)
 	db, err := database.Connect()
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Critical Error: Failed to connect to database: %v", err)
 	}
 
-	// Run migrations
+	// Run AutoMigrations to ensure database tables match GORM models
 	if err := database.AutoMigrate(db); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		log.Fatalf("Critical Error: Failed to run migrations: %v", err)
 	}
 
-	// Check if we need to seed
+	// Granular Database Seeding: Populates initial sample data if tables are empty
+	// Controlled by the SEED_DB environment variable
 	if os.Getenv("SEED_DB") == "true" {
 		if err := database.Seed(db); err != nil {
 			log.Printf("Warning: Seeding failed: %v", err)
@@ -45,26 +46,26 @@ func main() {
 	// Initialize handlers
 	h := handlers.New(db)
 
-	// Public routes
+	// Public API Group (No authentication required)
 	api := router.Group("/api")
 	{
-		// Health check
+		// Basic Health Check - Verifies the server is operational
 		api.GET("/health", func(c *gin.Context) {
 			c.JSON(200, gin.H{"status": "OK", "message": "Smart Cafeteria API is running"})
 		})
 
-		// Auth routes
+		// Authentication Endpoints (Login and Registration)
 		auth := api.Group("/auth")
 		{
 			auth.POST("/login", h.Login)
 			auth.POST("/register", h.Register)
 		}
 
-		// Public menu
+		// Public Menu access allows students to view items before logging in
 		api.GET("/menu", h.GetMenuItems)
 	}
 
-	// Protected routes
+	// Protected API Group (JWT Authentication Required)
 	protected := api.Group("")
 	protected.Use(middleware.AuthRequired())
 	{

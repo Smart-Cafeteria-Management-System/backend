@@ -89,7 +89,9 @@ func (h *Handler) GetQueueStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// GetMyToken returns the current user's queue token
+// GetMyToken returns the authenticated student's current queue information.
+// CRITICAL ETHICS FEATURE: Calculates 'Dynamic Wait Time' by summing the 
+// preparation times of all items ordered by students ahead in the queue.
 func (h *Handler) GetMyToken(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -180,7 +182,8 @@ func (h *Handler) GetQueueHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, tokens)
 }
 
-// CallNextToken calls the next token in queue (admin only)
+// CallNextToken marks the next token in queue as 'called' (Staff Only).
+// ENFORCED FIFO: The system automatically picks the oldest waiting token.
 func (h *Handler) CallNextToken(c *gin.Context) {
 	todayStart, todayEnd := getTodayRange()
 
@@ -218,7 +221,7 @@ func (h *Handler) CallNextToken(c *gin.Context) {
 	c.JSON(http.StatusOK, token)
 }
 
-// ServeToken marks a token as served and awards points
+// ServeToken marks a token as served and awards attendance points
 func (h *Handler) ServeToken(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
