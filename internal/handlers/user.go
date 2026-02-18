@@ -8,6 +8,17 @@ import (
 	"github.com/smart-cafeteria/backend/internal/models"
 )
 
+// GetAllUsers returns all users (admin only)
+func (h *Handler) GetAllUsers(c *gin.Context) {
+	var users []models.User
+	if err := h.DB.Order("created_at DESC").Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch users"})
+		return
+	}
+
+	c.JSON(http.StatusOK, users)
+}
+
 // GetCurrentUser returns the authenticated user's profile
 func (h *Handler) GetCurrentUser(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
@@ -69,4 +80,42 @@ func (h *Handler) UpdateCurrentUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, user)
+}
+
+// BlockUser blocks a user (admin only)
+func (h *Handler) BlockUser(c *gin.Context) {
+	userID := c.Param("id")
+	
+	var user models.User
+	if err := h.DB.First(&user, "id = ?", userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	user.Blocked = true
+	if err := h.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to block user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User blocked successfully", "user": user})
+}
+
+// UnblockUser unblocks a user (admin only)
+func (h *Handler) UnblockUser(c *gin.Context) {
+	userID := c.Param("id")
+	
+	var user models.User
+	if err := h.DB.First(&user, "id = ?", userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	user.Blocked = false
+	if err := h.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unblock user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User unblocked successfully", "user": user})
 }

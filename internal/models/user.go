@@ -27,6 +27,7 @@ type User struct {
 	StudentID           *string   `gorm:"size:50" json:"studentId,omitempty"`
 	DietaryRestrictions string    `gorm:"type:text;default:'[]'" json:"dietaryRestrictions"`
 	NotificationEnabled bool      `gorm:"default:true" json:"notificationEnabled"`
+	Blocked             bool      `gorm:"default:false" json:"blocked"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
 

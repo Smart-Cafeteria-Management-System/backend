@@ -280,6 +280,11 @@ func (h *Handler) AwardAttendancePoints(userID, bookingID, slotID uuid.UUID, has
 		h.DB.Save(&userPoints)
 	}
 
+	// Auto-block user if points reach -100 or below
+	if userPoints.TotalPoints <= -100 {
+		h.DB.Model(&models.User{}).Where("id = ?", userID).Update("blocked", true)
+	}
+
 	return nil
 }
 
@@ -323,6 +328,11 @@ func (h *Handler) RecordNoShow(userID, bookingID, slotID uuid.UUID) error {
 	} else {
 		userPoints.TotalPoints -= rule.NoShowPenalty
 		h.DB.Save(&userPoints)
+	}
+
+	// Auto-block user if points reach -100 or below
+	if userPoints.TotalPoints <= -100 {
+		h.DB.Model(&models.User{}).Where("id = ?", userID).Update("blocked", true)
 	}
 
 	return nil

@@ -3,7 +3,6 @@ package database
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/smart-cafeteria/backend/internal/config"
 	"github.com/smart-cafeteria/backend/internal/models"
@@ -21,7 +20,7 @@ func Connect() (*gorm.DB, error) {
 	dbname := config.GetEnv("DB_NAME", "cafeteria")
 
 	dsn := fmt.Sprintf(
-		"host='%s' port='%s' user='%s' password='%s' dbname='%s' sslmode=require TimeZone=Asia/Kolkata",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=require TimeZone=Asia/Kolkata",
 		host, port, user, password, dbname,
 	)
 
@@ -32,14 +31,7 @@ func Connect() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	sqlDB, err := db.DB()
-	if err == nil {
-		sqlDB.SetMaxIdleConns(10)
-		sqlDB.SetMaxOpenConns(100)
-		sqlDB.SetConnMaxLifetime(time.Hour)
-	}
-
-	log.Println("Connected to PostgreSQL database with pooling")
+	log.Println("Connected to PostgreSQL database")
 	return db, nil
 }
 

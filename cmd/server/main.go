@@ -14,7 +14,9 @@ import (
 
 func main() {
 	// Load .env file if exists (for local development)
-	godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: .env file not found or error loading: %v", err)
+	}
 
 	// Initialize database connection to Supabase (PostgreSQL)
 	db, err := database.Connect()
@@ -76,8 +78,12 @@ func main() {
 		// User routes (keep for backward compatibility)
 		users := protected.Group("/users")
 		{
+			users.GET("", middleware.AdminOnly(), h.GetAllUsers)
 			users.GET("/me", h.GetCurrentUser)
 			users.PUT("/me", h.UpdateCurrentUser)
+			// Admin user management
+			users.PUT("/:id/block", middleware.AdminOnly(), h.BlockUser)
+			users.PUT("/:id/unblock", middleware.AdminOnly(), h.UnblockUser)
 		}
 
 		// Menu management (admin only)

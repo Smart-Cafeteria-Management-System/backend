@@ -76,6 +76,15 @@ func (h *Handler) CreateBooking(c *gin.Context) {
 		return
 	}
 
+	// Check if user is blocked
+	var user models.User
+	if err := h.DB.First(&user, "id = ?", userID).Error; err == nil {
+		if user.Blocked {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been blocked due to low incentive points. Please contact admin."})
+			return
+		}
+	}
+
 	var req CreateBookingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
