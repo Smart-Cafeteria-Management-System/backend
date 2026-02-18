@@ -52,6 +52,12 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
+	// Check if user is blocked
+	if user.Blocked {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been blocked. Please contact the administrator."})
+		return
+	}
+
 	// Generate JWT token
 	token, err := generateToken(user)
 	if err != nil {
