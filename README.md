@@ -79,7 +79,39 @@ backend/
 
 ---
 
-## 🔐 Security & Ethics
+## Security & Ethics
 - **FIFO Enforcement**: The queue system strictly prevents manual reordering or favoritism.
 - **SSL Required**: Communication with Supabase is encrypted using `sslmode=require`.
 - **RBAC**: Role-Based Access Control ensures only Admins can access operational reports.
+- **Two-Factor Authentication (TOTP)**: Mandatory 2FA on login using TOTP (Google Authenticator / Authy compatible).
+- **Audit Logs**: All security-sensitive actions (logins, 2FA changes, blocked accounts) are recorded with timestamps and IP addresses.
+
+---
+
+## Completed Backlog
+
+The following key features have been successfully implemented in the production build:
+
+1.  **ML-Based Demand Forecasting**
+    *   **Description**: Integrated a Python-based Machine Learning model (`ml-model/`) to predict daily cafeteria demand, visualized via the `StaffForecast` dashboard.
+    *   **Status**: Completed
+
+2.  **Incentive & Addon Redemption System**
+    *   **Description**: Implemented a gamified points system (`Incentives.jsx`) allowing students to claim free add-ons (`AddonClaim.jsx`) based on booking history.
+    *   **Status**: Completed
+
+3.  **Real-Time Queue Management**
+    *   **Description**: Developed a live `QueueStatus` view and backend token logic (`queue_token.go`) to track and display meal pickup status in real-time.
+    *   **Status**: Completed
+
+4.  **Role-Based Dashboards (RBAC)**
+    *   **Description**: Secured application routes and created distinct UI experiences for Admin, Staff, and Student roles (`AdminDashboard`, `StaffDashboard`, `UserDashboard`).
+    *   **Status**: Completed
+
+5.  **Waste Log & Analytics**
+    *   **Description**: Built a comprehensive Analytics dashboard (`Analytics.jsx`) to track food waste logs (`waste_log.go`) and daily attendance metrics.
+    *   **Status**: Completed
+
+6.  **Mandatory Two-Factor Authentication**
+    *   **Description**: All accounts must configure TOTP 2FA on first login. Subsequent logins require an OTP from an authenticator app. Audit logs track all authentication events.
+    *   **Status**: Completed
