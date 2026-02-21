@@ -61,6 +61,9 @@ func main() {
 		{
 			auth.POST("/login", h.Login)
 			auth.POST("/register", h.Register)
+			auth.POST("/verify-totp", h.VerifyTOTP)              // Step 2: user with 2FA already set up
+			auth.POST("/totp/first-setup", h.FirstSetupTOTP)     // Mandatory: generate QR for new user
+			auth.POST("/totp/first-confirm", h.FirstConfirmTOTP) // Mandatory: confirm + issue real JWT
 		}
 
 		// Public Menu access allows students to view items before logging in
@@ -74,6 +77,15 @@ func main() {
 		// Auth profile routes (frontend expects /auth/me)
 		protected.GET("/auth/me", h.GetCurrentUser)
 		protected.PUT("/auth/me", h.UpdateCurrentUser)
+
+		// TOTP / 2FA routes
+		totpGroup := protected.Group("/auth/totp")
+		{
+			totpGroup.GET("/status", h.GetTOTPStatus)
+			totpGroup.POST("/setup", h.SetupTOTP)
+			totpGroup.POST("/confirm", h.ConfirmTOTP)
+			totpGroup.DELETE("/disable", h.DisableTOTP)
+		}
 
 		// User routes (keep for backward compatibility)
 		users := protected.Group("/users")
@@ -203,6 +215,9 @@ func main() {
 			addons.DELETE("/:id", middleware.AdminOnly(), h.DeleteAddon)
 			addons.POST("/claim", middleware.AdminOnly(), h.ClaimRedemption) // Staff verifies code
 		}
+
+		// Audit log routes (admin only)
+		protected.GET("/audit-logs", middleware.AdminOnly(), h.GetAuditLogs)
 	}
 
 	// Get port from environment or default
