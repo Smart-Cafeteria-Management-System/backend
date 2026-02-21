@@ -57,5 +57,7 @@ func AutoMigrate(db *gorm.DB) error {
 		// Addon redemption models
 		&models.Addon{},
 		&models.AddonRedemption{},
+		// Audit log
+		&models.AuditLog{},
 	)
 }
