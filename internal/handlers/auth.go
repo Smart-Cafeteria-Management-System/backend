@@ -6,6 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/pquerna/otp/totp"
 	"github.com/smart-cafeteria/backend/internal/config"
 	"github.com/smart-cafeteria/backend/internal/middleware"
 	"github.com/smart-cafeteria/backend/internal/models"
@@ -27,11 +29,18 @@ type RegisterRequest struct {
 
 // AuthResponse represents authentication response
 type AuthResponse struct {
-	Token string       `json:"token"`
-	User  models.User  `json:"user"`
+	Token string      `json:"token"`
+	User  models.User `json:"user"`
 }
 
-// Login authenticates a user and returns a JWT token
+// VerifyTOTPRequest is the body for the TOTP verification step after login
+type VerifyTOTPRequest struct {
+	TempToken string `json:"tempToken" binding:"required"`
+	Code      string `json:"code" binding:"required"`
+}
+
+// Login authenticates a user and returns a JWT token.
+// If TOTP is enabled, it returns totp_required: true and a short-lived temp_token instead.
 func (h *Handler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -42,32 +51,101 @@ func (h *Handler) Login(c *gin.Context) {
 	// Find user by email
 	var user models.User
 	if err := h.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		LogActivity(h.DB, c, nil, req.Email, "LOGIN_FAILED", "auth",
+			map[string]interface{}{"reason": "user not found"}, false)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
 	// Check password
 	if !user.CheckPassword(req.Password) {
+		LogActivity(h.DB, c, &user.ID, user.Email, "LOGIN_FAILED", "auth",
+			map[string]interface{}{"reason": "invalid password"}, false)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
 	// Check if user is blocked
 	if user.Blocked {
+		LogActivity(h.DB, c, &user.ID, user.Email, "LOGIN_FAILED", "auth",
+			map[string]interface{}{"reason": "account blocked"}, false)
 		c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been blocked. Please contact the administrator."})
 		return
 	}
 
-	// Generate JWT token
-	token, err := generateToken(user)
+	// Mandatory 2FA gate: users without TOTP configured must set it up before getting a JWT
+	if !user.TOTPEnabled {
+		tempToken, err := generateTempToken(user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate temp token"})
+			return
+		}
+		LogActivity(h.DB, c, &user.ID, user.Email, "LOGIN_TOTP_SETUP_REQUIRED", "auth", nil, true)
+		c.JSON(http.StatusOK, gin.H{
+			"totp_setup_required": true,
+			"temp_token":          tempToken,
+		})
+		return
+	}
+
+	// TOTP is configured — require OTP verification before issuing the JWT
+	tempToken, err := generateTempToken(user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate temp token"})
+		return
+	}
+	LogActivity(h.DB, c, &user.ID, user.Email, "LOGIN_TOTP_REQUIRED", "auth", nil, true)
+	c.JSON(http.StatusOK, gin.H{
+		"totp_required": true,
+		"temp_token":    tempToken,
+	})
+}
+
+// VerifyTOTP handles the second factor — validates the temp token + OTP and issues the real JWT.
+func (h *Handler) VerifyTOTP(c *gin.Context) {
+	var req VerifyTOTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Parse temp token
+	secret := config.GetEnv("JWT_SECRET", "your-secret-key")
+	claims := &TempClaims{}
+	token, err := jwt.ParseWithClaims(req.TempToken, claims, func(t *jwt.Token) (interface{}, error) {
+		return []byte(secret), nil
+	})
+	if err != nil || !token.Valid || !claims.IsTempToken {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired temp token"})
+		return
+	}
+
+	// Fetch user
+	var user models.User
+	if err := h.DB.First(&user, "id = ?", claims.UserID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Validate OTP
+	if !totp.Validate(req.Code, user.TOTPSecret) {
+		LogActivity(h.DB, c, &user.ID, user.Email, "LOGIN_TOTP_FAILED", "auth",
+			map[string]interface{}{"reason": "invalid OTP"}, false)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP code"})
+		return
+	}
+
+	// Issue the real JWT
+	authToken, err := generateToken(user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
-	// Return flattened response for frontend compatibility
+	LogActivity(h.DB, c, &user.ID, user.Email, "LOGIN_SUCCESS", "auth", nil, true)
+
 	c.JSON(http.StatusOK, gin.H{
-		"token":               token,
+		"token":               authToken,
 		"_id":                 user.ID,
 		"name":                user.Name,
 		"email":               user.Email,
@@ -75,6 +153,7 @@ func (h *Handler) Login(c *gin.Context) {
 		"studentId":           user.StudentID,
 		"dietaryRestrictions": user.DietaryRestrictions,
 		"notificationEnabled": user.NotificationEnabled,
+		"totpEnabled":         user.TOTPEnabled,
 		"createdAt":           user.CreatedAt,
 		"updatedAt":           user.UpdatedAt,
 	})
@@ -119,6 +198,11 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
+	LogActivity(h.DB, c, &user.ID, user.Email, "REGISTER", "auth", map[string]interface{}{
+		"name": user.Name,
+		"role": user.Role,
+	}, true)
+
 	// Return flattened response for frontend compatibility
 	c.JSON(http.StatusCreated, gin.H{
 		"token":               token,
@@ -129,15 +213,38 @@ func (h *Handler) Register(c *gin.Context) {
 		"studentId":           user.StudentID,
 		"dietaryRestrictions": user.DietaryRestrictions,
 		"notificationEnabled": user.NotificationEnabled,
+		"totpEnabled":         user.TOTPEnabled,
 		"createdAt":           user.CreatedAt,
 		"updatedAt":           user.UpdatedAt,
 	})
 }
 
+// TempClaims is a short-lived JWT used as a "password verified" token before TOTP
+type TempClaims struct {
+	UserID      uuid.UUID `json:"userId"`
+	IsTempToken bool      `json:"isTempToken"`
+	jwt.RegisteredClaims
+}
+
+// generateTempToken creates a 5-minute JWT that only signals password was verified
+func generateTempToken(user models.User) (string, error) {
+	secret := config.GetEnv("JWT_SECRET", "your-secret-key")
+	claims := TempClaims{
+		UserID:      user.ID,
+		IsTempToken: true,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
 // generateToken creates a JWT token for the user
 func generateToken(user models.User) (string, error) {
 	secret := config.GetEnv("JWT_SECRET", "your-secret-key")
-	
+
 	claims := middleware.Claims{
 		UserID: user.ID,
 		Email:  user.Email,
