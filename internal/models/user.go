@@ -28,6 +28,8 @@ type User struct {
 	DietaryRestrictions string    `gorm:"type:text;default:'[]'" json:"dietaryRestrictions"`
 	NotificationEnabled bool      `gorm:"default:true" json:"notificationEnabled"`
 	Blocked             bool      `gorm:"default:false" json:"blocked"`
+	TOTPSecret          string    `gorm:"size:64" json:"-"`
+	TOTPEnabled         bool      `gorm:"default:false" json:"totpEnabled"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
 
