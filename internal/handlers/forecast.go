@@ -1,15 +1,97 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/smart-cafeteria/backend/internal/models"
 )
+
+// getMLAPIURL returns the ML prediction service URL
+func getMLAPIURL() string {
+	if url := os.Getenv("ML_API_URL"); url != "" {
+		return url
+	}
+	return "http://localhost:5001"
+}
+
+// mlDayRequest is the request body for the ML /predict/day endpoint
+type mlDayRequest struct {
+	Date     string `json:"date"`
+	Weather  string `json:"weather"`
+	Schedule string `json:"schedule"`
+}
+
+// mlMealPrediction represents a single meal prediction from the ML API
+type mlMealPrediction struct {
+	PredictedDemand int    `json:"predicted_demand"`
+	Confidence      int    `json:"confidence"`
+	ModelType       string `json:"model_type"`
+}
+
+// mlDayResponse is the response from the ML /predict/day endpoint
+type mlDayResponse struct {
+	Success     bool                        `json:"success"`
+	Date        string                      `json:"date"`
+	Predictions map[string]mlMealPrediction  `json:"predictions"`
+}
+
+// callMLPredictDay calls the ML API to get predictions for all meals on a given date
+func callMLPredictDay(date time.Time, weather string, schedule string) (*mlDayResponse, error) {
+	if weather == "" {
+		weather = "sunny"
+	}
+	if schedule == "" {
+		schedule = "regular"
+	}
+
+	reqBody := mlDayRequest{
+		Date:     date.Format("2006-01-02"),
+		Weather:  weather,
+		Schedule: schedule,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(
+		getMLAPIURL()+"/predict/day",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ML API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ML API response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ML API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var mlResp mlDayResponse
+	if err := json.Unmarshal(body, &mlResp); err != nil {
+		return nil, fmt.Errorf("failed to parse ML API response: %w", err)
+	}
+
+	return &mlResp, nil
+}
 
 // GetForecasts returns demand forecasts
 func (h *Handler) GetForecasts(c *gin.Context) {
@@ -51,18 +133,50 @@ func (h *Handler) GetTodayForecasts(c *gin.Context) {
 		return
 	}
 
-	// If no forecasts exist, generate placeholder forecasts
+	// If no forecasts exist, generate from ML API
 	if len(forecasts) == 0 {
-		mealTypes := []models.MealType{models.MealBreakfast, models.MealLunch, models.MealDinner}
-		predictions := []int{80, 150, 120}
+		dayOfWeek := models.DayOfWeek(today.Weekday().String())
 		
-		for i, mealType := range mealTypes {
-			forecasts = append(forecasts, models.DemandForecast{
-				Date:            today,
-				MealType:        mealType,
-				PredictedDemand: predictions[i],
-				Confidence:      75,
-			})
+		// Try ML API first
+		mlResp, err := callMLPredictDay(today, "sunny", "regular")
+		if err == nil && mlResp.Success {
+			log.Printf("ML API returned predictions for today")
+			mealMap := map[string]models.MealType{
+				"breakfast": models.MealBreakfast,
+				"lunch":     models.MealLunch,
+				"snacks":    models.MealSnacks,
+				"dinner":    models.MealDinner,
+			}
+			for mealName, pred := range mlResp.Predictions {
+				mealType, ok := mealMap[mealName]
+				if !ok {
+					continue
+				}
+				forecast := models.DemandForecast{
+					Date:             today,
+					MealType:         mealType,
+					PredictedDemand:  pred.PredictedDemand,
+					WeatherCondition: models.WeatherSunny,
+					AcademicSchedule: models.ScheduleRegular,
+					DayOfWeek:        dayOfWeek,
+					Confidence:       pred.Confidence,
+				}
+				h.DB.Create(&forecast)
+				forecasts = append(forecasts, forecast)
+			}
+		} else {
+			// Fallback to rule-based
+			log.Printf("ML API unavailable for today, using fallback: %v", err)
+			mealTypes := []models.MealType{models.MealBreakfast, models.MealLunch, models.MealSnacks, models.MealDinner}
+			predictions := []int{300, 500, 200, 700}
+			for i, mealType := range mealTypes {
+				forecasts = append(forecasts, models.DemandForecast{
+					Date:            today,
+					MealType:        mealType,
+					PredictedDemand: predictions[i],
+					Confidence:      75,
+				})
+			}
 		}
 	}
 
@@ -70,7 +184,7 @@ func (h *Handler) GetTodayForecasts(c *gin.Context) {
 }
 
 // GetWeekForecasts provides a rolling 7-day outlook of expected student demand.
-// It integrates existing forecast data with intelligent 'Auto-Generation' for missing gaps,
+// It integrates existing forecast data with ML-powered predictions for missing gaps,
 // ensuring staff can always plan a full week ahead.
 func (h *Handler) GetWeekForecasts(c *gin.Context) {
 	today := time.Now().Truncate(24 * time.Hour)
@@ -86,32 +200,94 @@ func (h *Handler) GetWeekForecasts(c *gin.Context) {
 
 	log.Printf("Found %d forecasts for week range", len(forecasts))
 
-	// Generate forecasts for missing days
+	// Build map of existing forecasts
 	forecastMap := make(map[string]bool)
 	for _, f := range forecasts {
 		key := f.Date.Format("2006-01-02") + "_" + string(f.MealType)
 		forecastMap[key] = true
 	}
 
-	mealTypes := []models.MealType{models.MealBreakfast, models.MealLunch, models.MealDinner}
+	mealTypes := []models.MealType{models.MealBreakfast, models.MealLunch, models.MealSnacks, models.MealDinner}
+	mealMap := map[string]models.MealType{
+		"breakfast": models.MealBreakfast,
+		"lunch":     models.MealLunch,
+		"snacks":    models.MealSnacks,
+		"dinner":    models.MealDinner,
+	}
 	baseDemands := map[models.MealType]int{
-		models.MealBreakfast: 80,
-		models.MealLunch:     150,
-		models.MealDinner:    120,
+		models.MealBreakfast: 300,
+		models.MealLunch:     500,
+		models.MealSnacks:    200,
+		models.MealDinner:    700,
 	}
 
 	for d := today; d.Before(weekEnd) || d.Equal(weekEnd); d = d.AddDate(0, 0, 1) {
+		// Check if all 3 meals exist for this day
+		allExist := true
 		for _, mealType := range mealTypes {
 			key := d.Format("2006-01-02") + "_" + string(mealType)
 			if !forecastMap[key] {
-				dayOfWeek := models.DayOfWeek(d.Weekday().String())
+				allExist = false
+				break
+			}
+		}
+		if allExist {
+			continue
+		}
+
+		dayOfWeek := models.DayOfWeek(d.Weekday().String())
+
+		// Determine schedule based on day
+		schedule := "regular"
+		if d.Weekday() == time.Saturday || d.Weekday() == time.Sunday {
+			schedule = "weekend"
+		}
+
+		// Try ML API for this day
+		mlResp, err := callMLPredictDay(d, "sunny", schedule)
+		if err == nil && mlResp.Success {
+			log.Printf("ML API returned predictions for %s", d.Format("2006-01-02"))
+			for mealName, pred := range mlResp.Predictions {
+				mealType, ok := mealMap[mealName]
+				if !ok {
+					continue
+				}
+				key := d.Format("2006-01-02") + "_" + string(mealType)
+				if forecastMap[key] {
+					continue
+				}
+				weatherCondition := models.WeatherSunny
+				academicSchedule := models.ScheduleRegular
+				if schedule == "weekend" {
+					academicSchedule = models.ScheduleWeekend
+				}
+
+				forecast := models.DemandForecast{
+					Date:             d,
+					MealType:         mealType,
+					PredictedDemand:  pred.PredictedDemand,
+					WeatherCondition: weatherCondition,
+					AcademicSchedule: academicSchedule,
+					DayOfWeek:        dayOfWeek,
+					Confidence:       pred.Confidence,
+				}
+				h.DB.Create(&forecast)
+				forecasts = append(forecasts, forecast)
+				forecastMap[key] = true
+			}
+		} else {
+			// Fallback to rule-based for this day
+			log.Printf("ML API unavailable for %s, using fallback: %v", d.Format("2006-01-02"), err)
+			for _, mealType := range mealTypes {
+				key := d.Format("2006-01-02") + "_" + string(mealType)
+				if forecastMap[key] {
+					continue
+				}
 				demand := baseDemands[mealType]
-				
-				// Weekend adjustment
 				if d.Weekday() == time.Saturday || d.Weekday() == time.Sunday {
 					demand = int(float64(demand) * 0.5)
 				}
-				
+
 				forecast := models.DemandForecast{
 					Date:             d,
 					MealType:         mealType,
@@ -123,8 +299,17 @@ func (h *Handler) GetWeekForecasts(c *gin.Context) {
 				}
 				h.DB.Create(&forecast)
 				forecasts = append(forecasts, forecast)
+				forecastMap[key] = true
 			}
 		}
+	}
+
+	// Sort forecasts by date then meal type
+	// Re-query to get properly ordered results
+	var sortedForecasts []models.DemandForecast
+	if err := h.DB.Where("date >= ? AND date <= ?", today, weekEnd).
+		Order("date, meal_type").Find(&sortedForecasts).Error; err == nil {
+		forecasts = sortedForecasts
 	}
 
 	c.JSON(http.StatusOK, forecasts)
@@ -144,7 +329,7 @@ type PredictionResponse struct {
 	Confidence      int `json:"confidence"`
 }
 
-// GetPrediction generates a demand prediction
+// GetPrediction generates a demand prediction using the ML API
 func (h *Handler) GetPrediction(c *gin.Context) {
 	var req PredictionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -158,51 +343,64 @@ func (h *Handler) GetPrediction(c *gin.Context) {
 		return
 	}
 
-	// Get day of week
 	dayOfWeek := models.DayOfWeek(date.Weekday().String())
 
-	// Simple prediction logic (in production, call ML API)
-	baseDemand := 100
-	switch req.MealType {
-	case models.MealBreakfast:
-		baseDemand = 80
-	case models.MealLunch:
-		baseDemand = 150
-	case models.MealDinner:
-		baseDemand = 120
-	}
-
-	// Adjust for weather
 	if req.WeatherCondition == "" {
 		req.WeatherCondition = models.WeatherSunny
 	}
-	switch req.WeatherCondition {
-	case models.WeatherRainy:
-		baseDemand = int(float64(baseDemand) * 0.8)
-	case models.WeatherStormy:
-		baseDemand = int(float64(baseDemand) * 0.6)
-	}
-
-	// Adjust for academic schedule
 	if req.AcademicSchedule == "" {
 		req.AcademicSchedule = models.ScheduleRegular
 	}
-	switch req.AcademicSchedule {
-	case models.ScheduleExams:
-		baseDemand = int(float64(baseDemand) * 1.2)
-	case models.ScheduleHoliday:
-		baseDemand = int(float64(baseDemand) * 0.3)
-	case models.ScheduleWeekend:
-		baseDemand = int(float64(baseDemand) * 0.5)
+
+	predictedDemand := 0
+	confidence := 75
+
+	// Try ML API first
+	mlResp, err := callMLPredictDay(date, string(req.WeatherCondition), string(req.AcademicSchedule))
+	if err == nil && mlResp.Success {
+		mealKey := string(req.MealType)
+		if pred, ok := mlResp.Predictions[mealKey]; ok {
+			predictedDemand = pred.PredictedDemand
+			confidence = pred.Confidence
+			log.Printf("ML prediction for %s %s: demand=%d, confidence=%d%%", date.Format("2006-01-02"), mealKey, predictedDemand, confidence)
+		}
 	}
 
-	confidence := 75
+	// Fallback to rule-based if ML failed
+	if predictedDemand == 0 {
+		log.Printf("Using rule-based fallback for prediction: %v", err)
+		baseDemand := 100
+		switch req.MealType {
+		case models.MealBreakfast:
+			baseDemand = 80
+		case models.MealLunch:
+			baseDemand = 150
+		case models.MealDinner:
+			baseDemand = 120
+		}
+		switch req.WeatherCondition {
+		case models.WeatherRainy:
+			baseDemand = int(float64(baseDemand) * 0.8)
+		case models.WeatherStormy:
+			baseDemand = int(float64(baseDemand) * 0.6)
+		}
+		switch req.AcademicSchedule {
+		case models.ScheduleExams:
+			baseDemand = int(float64(baseDemand) * 1.2)
+		case models.ScheduleHoliday:
+			baseDemand = int(float64(baseDemand) * 0.3)
+		case models.ScheduleWeekend:
+			baseDemand = int(float64(baseDemand) * 0.5)
+		}
+		predictedDemand = baseDemand
+		confidence = 75
+	}
 
 	// Save forecast
 	forecast := models.DemandForecast{
 		Date:             date,
 		MealType:         req.MealType,
-		PredictedDemand:  baseDemand,
+		PredictedDemand:  predictedDemand,
 		WeatherCondition: req.WeatherCondition,
 		AcademicSchedule: req.AcademicSchedule,
 		DayOfWeek:        dayOfWeek,
@@ -211,7 +409,7 @@ func (h *Handler) GetPrediction(c *gin.Context) {
 	h.DB.Create(&forecast)
 
 	c.JSON(http.StatusOK, PredictionResponse{
-		PredictedDemand: baseDemand,
+		PredictedDemand: predictedDemand,
 		Confidence:      confidence,
 	})
 }
