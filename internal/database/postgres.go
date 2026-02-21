@@ -20,7 +20,7 @@ func Connect() (*gorm.DB, error) {
 	dbname := config.GetEnv("DB_NAME", "cafeteria")
 
 	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=require TimeZone=Asia/Kolkata",
+		"host='%s' port='%s' user='%s' password='%s' dbname='%s' sslmode=require TimeZone=Asia/Kolkata",
 		host, port, user, password, dbname,
 	)
 
