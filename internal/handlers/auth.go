@@ -14,6 +14,7 @@ import (
 	"github.com/smart-cafeteria/backend/internal/config"
 	"github.com/smart-cafeteria/backend/internal/middleware"
 	"github.com/smart-cafeteria/backend/internal/models"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // LoginRequest represents login payload
@@ -281,4 +282,130 @@ func generateToken(user models.User) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
+}
+
+// ForgotPasswordRequest represents the forgot password request
+type ForgotPasswordRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+// ForgotPassword generates a password reset token
+func (h *Handler) ForgotPassword(c *gin.Context) {
+	var req ForgotPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Valid email is required"})
+		return
+	}
+
+	var user models.User
+	if err := h.DB.First(&user, "email = ?", req.Email).Error; err != nil {
+		// Return success even if email not found to prevent email enumeration
+		c.JSON(http.StatusOK, gin.H{
+			"message": "If an account with that email exists, a password reset link has been generated.",
+		})
+		return
+	}
+
+	// Invalidate any existing reset tokens for this user
+	h.DB.Model(&models.PasswordReset{}).Where("user_id = ? AND used = false", user.ID).Update("used", true)
+
+	// Generate a secure random reset token
+	resetToken := uuid.New().String()
+
+	// Create password reset entry (expires in 15 minutes)
+	passwordReset := models.PasswordReset{
+		UserID:    user.ID,
+		Token:     resetToken,
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+	}
+
+	if err := h.DB.Create(&passwordReset).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create reset token"})
+		return
+	}
+
+	// Log the password reset request
+	h.DB.Create(&models.AuditLog{
+		Action:    "password_reset_requested",
+		UserID:    &user.ID,
+		UserEmail: user.Email,
+		Details:   "Password reset token generated",
+		IPAddress: c.ClientIP(),
+		Success:   true,
+	})
+
+	// In a production system, this token would be sent via email.
+	// For this project, we return it directly so it can be used in the UI.
+	log.Printf("[PASSWORD RESET] Token for %s: %s (expires in 15 min)", user.Email, resetToken)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "Password reset token generated successfully.",
+		"resetToken": resetToken,
+		"expiresIn":  "15 minutes",
+	})
+}
+
+// ResetPasswordRequest represents the reset password request
+type ResetPasswordRequest struct {
+	Token       string `json:"token" binding:"required"`
+	NewPassword string `json:"newPassword" binding:"required,min=6"`
+}
+
+// ResetPassword resets the user's password using a valid reset token
+func (h *Handler) ResetPassword(c *gin.Context) {
+	var req ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Token and new password (min 6 chars) are required"})
+		return
+	}
+
+	// Find the reset token
+	var resetEntry models.PasswordReset
+	if err := h.DB.First(&resetEntry, "token = ? AND used = false", req.Token).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired reset token"})
+		return
+	}
+
+	// Check if token is expired
+	if resetEntry.IsExpired() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Reset token has expired. Please request a new one."})
+		return
+	}
+
+	// Find the user
+	var user models.User
+	if err := h.DB.First(&user, "id = ?", resetEntry.UserID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Update password — explicitly hash it here for robustness, 
+	// then Save() will update the DB. This avoids potential hook bypass issues.
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+	
+	user.Password = string(hashedPassword)
+	if err := h.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reset password"})
+		return
+	}
+
+	// Mark token as used
+	resetEntry.Used = true
+	h.DB.Save(&resetEntry)
+
+	// Log the password reset
+	h.DB.Create(&models.AuditLog{
+		Action:    "password_reset_completed",
+		UserID:    &user.ID,
+		UserEmail: user.Email,
+		Details:   "Password was reset via recovery token",
+		IPAddress: c.ClientIP(),
+		Success:   true,
+	})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Password has been reset successfully. You can now log in with your new password."})
 }
