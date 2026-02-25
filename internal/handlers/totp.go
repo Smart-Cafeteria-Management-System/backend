@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"image/png"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -137,7 +138,10 @@ func (h *Handler) ConfirmTOTP(c *gin.Context) {
 		return
 	}
 
-	if !totp.Validate(req.Code, user.TOTPSecret) {
+	valid, vErr := totp.ValidateCustom(req.Code, user.TOTPSecret, time.Now().UTC(), totp.ValidateOpts{
+		Period: 30, Skew: 1, Digits: 6, Algorithm: 0,
+	})
+	if vErr != nil || !valid {
 		LogActivity(h.DB, c, &userID, user.Email, "TOTP_CONFIRM_FAILED", "auth", nil, false)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP code"})
 		return
@@ -183,7 +187,10 @@ func (h *Handler) DisableTOTP(c *gin.Context) {
 		return
 	}
 
-	if !totp.Validate(req.Code, user.TOTPSecret) {
+	valid2, vErr2 := totp.ValidateCustom(req.Code, user.TOTPSecret, time.Now().UTC(), totp.ValidateOpts{
+		Period: 30, Skew: 1, Digits: 6, Algorithm: 0,
+	})
+	if vErr2 != nil || !valid2 {
 		LogActivity(h.DB, c, &userID, user.Email, "TOTP_DISABLE_FAILED", "auth", map[string]interface{}{"reason": "invalid OTP"}, false)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP code"})
 		return
@@ -293,7 +300,10 @@ func (h *Handler) FirstConfirmTOTP(c *gin.Context) {
 		return
 	}
 
-	if !totp.Validate(req.Code, user.TOTPSecret) {
+	valid3, vErr3 := totp.ValidateCustom(req.Code, user.TOTPSecret, time.Now().UTC(), totp.ValidateOpts{
+		Period: 30, Skew: 1, Digits: 6, Algorithm: 0,
+	})
+	if vErr3 != nil || !valid3 {
 		LogActivity(h.DB, c, &user.ID, user.Email, "TOTP_FIRST_CONFIRM_FAILED", "auth", nil, false)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP code"})
 		return

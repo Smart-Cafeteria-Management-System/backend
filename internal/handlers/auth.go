@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	"github.com/smart-cafeteria/backend/internal/config"
 	"github.com/smart-cafeteria/backend/internal/middleware"
@@ -127,10 +130,31 @@ func (h *Handler) VerifyTOTP(c *gin.Context) {
 		return
 	}
 
-	// Validate OTP
-	if !totp.Validate(req.Code, user.TOTPSecret) {
+	// Validate OTP — debug logging
+	now := time.Now().UTC()
+	log.Printf("[TOTP DEBUG] ServerTime=%s, UserEmail=%s, SecretPrefix=%s..., CodeSubmitted=%s",
+		now.Format(time.RFC3339), user.Email, user.TOTPSecret[:4], req.Code)
+
+	// Generate what the expected code should be for comparison
+	expectedCode, _ := totp.GenerateCodeCustom(user.TOTPSecret, now, totp.ValidateOpts{
+		Period:    30,
+		Skew:     1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	log.Printf("[TOTP DEBUG] ExpectedCode=%s, SecretLen=%d", expectedCode, len(user.TOTPSecret))
+
+	valid, err := totp.ValidateCustom(req.Code, user.TOTPSecret, now, totp.ValidateOpts{
+		Period:    30,
+		Skew:     1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	log.Printf("[TOTP DEBUG] Valid=%v, Err=%v", valid, err)
+
+	if err != nil || !valid {
 		LogActivity(h.DB, c, &user.ID, user.Email, "LOGIN_TOTP_FAILED", "auth",
-			map[string]interface{}{"reason": "invalid OTP"}, false)
+			map[string]interface{}{"reason": fmt.Sprintf("invalid OTP: submitted=%s expected=%s serverTime=%s", req.Code, expectedCode, now.Format(time.RFC3339))}, false)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP code"})
 		return
 	}
