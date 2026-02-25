@@ -165,6 +165,7 @@ func main() {
 		sustainability := protected.Group("/sustainability")
 		{
 			sustainability.GET("/report", h.GetSustainabilityReport)
+			sustainability.GET("/report/csv", middleware.AdminOnly(), h.DownloadSustainabilityCSV)
 			sustainability.GET("/metrics", h.GetSustainabilityMetrics)
 		}
 

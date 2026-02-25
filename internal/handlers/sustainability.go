@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -397,3 +399,165 @@ func (h *Handler) GetPreparationRecommendations(c *gin.Context) {
 		},
 	})
 }
+
+// DownloadSustainabilityCSV generates a downloadable CSV sustainability report
+func (h *Handler) DownloadSustainabilityCSV(c *gin.Context) {
+	days := 30
+	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	endDate := time.Now()
+
+	// --- Gather data (same logic as GetSustainabilityReport) ---
+	var wasteLogs []models.WasteLog
+	h.DB.Where("date >= ?", startDate).Order("date").Find(&wasteLogs)
+
+	var forecasts []models.DemandForecast
+	h.DB.Where("date >= ? AND actual_demand > 0", startDate).Find(&forecasts)
+
+	// Totals
+	var totalPrepared, totalWasted int
+	var totalWeight float64
+	for _, log := range wasteLogs {
+		totalPrepared += log.PreparedQuantity
+		totalWasted += log.WastedQuantity
+		totalWeight += log.WasteWeight
+	}
+
+	wastePercent := 0.0
+	if totalPrepared > 0 {
+		wastePercent = float64(totalWasted) / float64(totalPrepared) * 100
+	}
+	utilizationPercent := 100 - wastePercent
+
+	// Forecast accuracy
+	var totalPercentageError float64
+	for _, f := range forecasts {
+		if f.ActualDemand > 0 {
+			absError := math.Abs(float64(f.PredictedDemand - f.ActualDemand))
+			totalPercentageError += absError / float64(f.ActualDemand) * 100
+		}
+	}
+	forecastAccuracy := 0.0
+	if len(forecasts) > 0 {
+		mape := totalPercentageError / float64(len(forecasts))
+		forecastAccuracy = math.Max(0, 100-mape)
+	}
+
+	// Meals served
+	var servedCount int64
+	h.DB.Model(&models.Booking{}).Where("status = ? AND created_at >= ?", "served", startDate).Count(&servedCount)
+
+	// Baseline comparison
+	baselineWaste := 20.0
+	wasteReduction := math.Max(0, baselineWaste-wastePercent)
+	wastedWeightSaved := (baselineWaste - wastePercent) / 100 * totalWeight
+	co2Saved := math.Max(0, wastedWeightSaved*2.5)
+	costSavings := math.Max(0, wastedWeightSaved*5.0)
+	wastePerMeal := 0.0
+	if servedCount > 0 {
+		wastePerMeal = float64(totalWasted) / float64(servedCount)
+	}
+	sustainabilityScore := int((forecastAccuracy * 0.3) + (utilizationPercent * 0.4) + (wasteReduction * 0.3 * 5))
+	if sustainabilityScore > 100 {
+		sustainabilityScore = 100
+	}
+
+	// Daily waste trends
+	dailyData := make(map[string]struct {
+		prepared  int
+		wasted    int
+		predicted int
+		actual    int
+	})
+	for _, log := range wasteLogs {
+		key := log.Date.Format("2006-01-02")
+		data := dailyData[key]
+		data.prepared += log.PreparedQuantity
+		data.wasted += log.WastedQuantity
+		dailyData[key] = data
+	}
+	for _, f := range forecasts {
+		key := f.Date.Format("2006-01-02")
+		data := dailyData[key]
+		data.predicted += f.PredictedDemand
+		data.actual += f.ActualDemand
+		dailyData[key] = data
+	}
+
+	// Recommendations
+	var recommendations []string
+	var achievements []string
+	if wastePercent > 15 {
+		recommendations = append(recommendations, "Consider reducing preparation quantities for low-demand items")
+	} else {
+		achievements = append(achievements, "Waste percentage is within acceptable limits")
+	}
+	if forecastAccuracy < 75 {
+		recommendations = append(recommendations, "Improve demand forecasting by analyzing more contextual factors")
+	} else {
+		achievements = append(achievements, "Demand forecasting is performing well")
+	}
+	if len(recommendations) == 0 {
+		recommendations = append(recommendations, "Continue current practices to maintain good sustainability performance")
+	}
+
+	// --- Build CSV ---
+	var csv strings.Builder
+
+	csv.WriteString("SMART CAFETERIA — SUSTAINABILITY REPORT\r\n")
+	csv.WriteString(fmt.Sprintf("Generated:,%s\r\n", endDate.Format("2006-01-02 15:04")))
+	csv.WriteString(fmt.Sprintf("Period:,%s to %s\r\n", startDate.Format("2006-01-02"), endDate.Format("2006-01-02")))
+	csv.WriteString("\r\n")
+
+	// Summary metrics section
+	csv.WriteString("SUMMARY METRICS\r\n")
+	csv.WriteString("Metric,Value\r\n")
+	csv.WriteString(fmt.Sprintf("Sustainability Score,%d / 100\r\n", sustainabilityScore))
+	csv.WriteString(fmt.Sprintf("Food Utilization %%,%.2f%%\r\n", utilizationPercent))
+	csv.WriteString(fmt.Sprintf("Waste Reduction %%,%.2f%%\r\n", wasteReduction))
+	csv.WriteString(fmt.Sprintf("Forecast Accuracy,%.2f%%\r\n", forecastAccuracy))
+	csv.WriteString(fmt.Sprintf("Total Meals Served,%d\r\n", servedCount))
+	csv.WriteString(fmt.Sprintf("Total Prepared,%d\r\n", totalPrepared))
+	csv.WriteString(fmt.Sprintf("Total Wasted,%d\r\n", totalWasted))
+	csv.WriteString(fmt.Sprintf("Waste Per Meal,%.2f\r\n", wastePerMeal))
+	csv.WriteString(fmt.Sprintf("CO2 Saved (kg),%.2f\r\n", co2Saved))
+	csv.WriteString(fmt.Sprintf("Cost Savings (₹),%.2f\r\n", costSavings))
+	csv.WriteString("\r\n")
+
+	// Daily waste trends
+	csv.WriteString("DAILY WASTE TRENDS\r\n")
+	csv.WriteString("Date,Prepared,Wasted,Waste %,Predicted Demand,Actual Demand,Forecast Accuracy %\r\n")
+	for date, data := range dailyData {
+		wp := 0.0
+		if data.prepared > 0 {
+			wp = float64(data.wasted) / float64(data.prepared) * 100
+		}
+		acc := 0.0
+		if data.actual > 0 {
+			err := math.Abs(float64(data.predicted-data.actual)) / float64(data.actual) * 100
+			acc = math.Max(0, 100-err)
+		}
+		csv.WriteString(fmt.Sprintf("%s,%d,%d,%.2f%%,%d,%d,%.2f%%\r\n",
+			date, data.prepared, data.wasted, wp, data.predicted, data.actual, acc))
+	}
+	csv.WriteString("\r\n")
+
+	// Recommendations
+	csv.WriteString("RECOMMENDATIONS\r\n")
+	for i, r := range recommendations {
+		csv.WriteString(fmt.Sprintf("%d,%s\r\n", i+1, r))
+	}
+	csv.WriteString("\r\n")
+
+	// Achievements
+	csv.WriteString("ACHIEVEMENTS\r\n")
+	for i, a := range achievements {
+		csv.WriteString(fmt.Sprintf("%d,%s\r\n", i+1, a))
+	}
+
+	// Set CSV download headers
+	filename := fmt.Sprintf("sustainability_report_%s.csv", endDate.Format("2006-01-02"))
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", []byte(csv.String()))
+}
+
