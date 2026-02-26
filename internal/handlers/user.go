@@ -119,3 +119,56 @@ func (h *Handler) UnblockUser(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "User unblocked successfully", "user": user})
 }
+
+// ChangeRoleRequest represents the request body for changing a user's role
+type ChangeRoleRequest struct {
+	Role string `json:"role" binding:"required"`
+}
+
+// ChangeUserRole changes a user's role (admin only)
+func (h *Handler) ChangeUserRole(c *gin.Context) {
+	userID := c.Param("id")
+
+	var req ChangeRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Role is required"})
+		return
+	}
+
+	// Validate role value
+	validRoles := map[string]bool{"student": true, "staff": true, "admin": true}
+	if !validRoles[req.Role] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role. Must be student, staff, or admin"})
+		return
+	}
+
+	var user models.User
+	if err := h.DB.First(&user, "id = ?", userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Prevent admin from changing their own role
+	adminID, _ := middleware.GetUserID(c)
+	if user.ID == adminID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Cannot change your own role"})
+		return
+	}
+
+	oldRole := user.Role
+	user.Role = models.UserRole(req.Role)
+	if err := h.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to change role"})
+		return
+	}
+
+	// Log role change to audit
+	h.DB.Create(&models.AuditLog{
+		Action:    "role_change",
+		UserID:    &adminID,
+		Details:   "Changed role of " + user.Email + " from " + string(oldRole) + " to " + req.Role,
+		IPAddress: c.ClientIP(),
+	})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Role updated successfully", "user": user})
+}
