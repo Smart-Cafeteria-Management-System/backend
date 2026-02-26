@@ -505,6 +505,37 @@ func Seed(db *gorm.DB) error {
 		}
 	}
 
+	// 7. Seed Operating Hours
+	var hoursCount int64
+	db.Model(&models.OperatingHours{}).Count(&hoursCount)
+	if hoursCount == 0 {
+		log.Println("Seeding operating hours...")
+		days := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+		mealTypes := []models.MealType{models.MealBreakfast, models.MealLunch, models.MealDinner}
+
+		for _, day := range days {
+			for _, meal := range mealTypes {
+				startTime := "08:00"
+				endTime := "10:00"
+				if meal == models.MealLunch {
+					startTime = "12:00"
+					endTime = "14:30"
+				} else if meal == models.MealDinner {
+					startTime = "19:00"
+					endTime = "21:30"
+				}
+
+				db.Create(&models.OperatingHours{
+					DayOfWeek: day,
+					MealType:  meal,
+					StartTime: startTime,
+					EndTime:   endTime,
+					IsClosed:  false,
+				})
+			}
+		}
+	}
+
 	log.Println("Database seeding check completed successfully!")
 	return nil
 }

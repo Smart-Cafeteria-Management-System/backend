@@ -61,5 +61,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.AuditLog{},
 		// Password reset
 		&models.PasswordReset{},
+		// Operating hours configuration
+		&models.OperatingHours{},
 	)
 }
