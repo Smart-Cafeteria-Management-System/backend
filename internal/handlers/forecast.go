@@ -472,6 +472,25 @@ func (h *Handler) GetForecastAccuracy(c *gin.Context) {
 	}
 
 	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	today := time.Now().Truncate(24 * time.Hour)
+
+	// PROACTIVE: Sync actual demand from bookings for all past forecasts in the range that lack data
+	var pendingForecasts []models.DemandForecast
+	h.DB.Where("date >= ? AND date < ? AND (actual_demand IS NULL OR actual_demand = 0)", startDate, today).Find(&pendingForecasts)
+	
+	for _, f := range pendingForecasts {
+		var bookingCount int64
+		h.DB.Model(&models.Booking{}).
+			Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
+			Where("meal_slots.date = ? AND meal_slots.meal_type = ?", f.Date, f.MealType).
+			Where("bookings.status IN ?", []string{"confirmed", "served"}).
+			Count(&bookingCount)
+		
+		if bookingCount > 0 {
+			f.ActualDemand = int(bookingCount)
+			h.DB.Save(&f)
+		}
+	}
 
 	var forecasts []models.DemandForecast
 	if err := h.DB.Where("date >= ? AND actual_demand > 0", startDate).

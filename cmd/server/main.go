@@ -251,6 +251,10 @@ func main() {
 		// Audit log routes (admin only)
 		protected.GET("/audit-logs", middleware.AdminOnly(), h.GetAuditLogs)
 
+		// System Settings routes
+		protected.GET("/system/settings", h.GetSystemSettings)
+		protected.PUT("/system/settings", middleware.AdminOnly(), h.UpdateSystemSettings)
+
 		// Operating Hours routes (US-AM-4)
 		protected.GET("/operating-hours", h.GetOperatingHours)
 		protected.PUT("/operating-hours/:id", middleware.AdminOnly(), h.UpdateOperatingHours)

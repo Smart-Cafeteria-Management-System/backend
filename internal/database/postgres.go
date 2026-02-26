@@ -63,5 +63,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.PasswordReset{},
 		// Operating hours configuration
 		&models.OperatingHours{},
+		// Global system settings
+		&models.SystemSettings{},
 	)
 }
