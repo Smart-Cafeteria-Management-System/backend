@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"runtime"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -11,6 +14,12 @@ import (
 	"github.com/smart-cafeteria/backend/internal/handlers"
 	"github.com/smart-cafeteria/backend/internal/middleware"
 )
+
+var startTime time.Time
+
+func init() {
+	startTime = time.Now()
+}
 
 func main() {
 	// Load .env file if exists (for local development)
@@ -51,9 +60,28 @@ func main() {
 	// Public API Group (No authentication required)
 	api := router.Group("/api")
 	{
-		// Basic Health Check - Verifies the server is operational
+		// Enhanced Health Check - Verifies the server is operational and monitoring system health
 		api.GET("/health", func(c *gin.Context) {
-			c.JSON(200, gin.H{"status": "OK", "message": "Smart Cafeteria API is running"})
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+
+			uptime := time.Since(startTime).String()
+
+			// Check DB connection
+			dbStatus := "OK"
+			sqlDB, err := h.DB.DB()
+			if err != nil || sqlDB.Ping() != nil {
+				dbStatus = "Error"
+			}
+
+			c.JSON(200, gin.H{
+				"status":     "OK",
+				"message":    "Smart Cafeteria API is running",
+				"uptime":     uptime,
+				"dbStatus":   dbStatus,
+				"memory":     fmt.Sprintf("%.2f MB", float64(m.Alloc)/1024/1024),
+				"goroutines": runtime.NumGoroutine(),
+			})
 		})
 
 		// Authentication Endpoints (Login and Registration)
@@ -64,6 +92,8 @@ func main() {
 			auth.POST("/verify-totp", h.VerifyTOTP)              // Step 2: user with 2FA already set up
 			auth.POST("/totp/first-setup", h.FirstSetupTOTP)     // Mandatory: generate QR for new user
 			auth.POST("/totp/first-confirm", h.FirstConfirmTOTP) // Mandatory: confirm + issue real JWT
+			auth.POST("/forgot-password", h.ForgotPassword)       // Password recovery
+			auth.POST("/reset-password", h.ResetPassword)         // Reset with token
 		}
 
 		// Public Menu access allows students to view items before logging in
@@ -96,6 +126,7 @@ func main() {
 			// Admin user management
 			users.PUT("/:id/block", middleware.AdminOnly(), h.BlockUser)
 			users.PUT("/:id/unblock", middleware.AdminOnly(), h.UnblockUser)
+			users.PUT("/:id/role", middleware.AdminOnly(), h.ChangeUserRole)
 		}
 
 		// Menu management (admin only)
@@ -156,9 +187,9 @@ func main() {
 		{
 			waste.GET("", h.GetWasteLogs)
 			waste.GET("/summary", h.GetWasteSummary)
-			waste.POST("", middleware.AdminOnly(), h.CreateWasteLog)
-			waste.PUT("/:id", middleware.AdminOnly(), h.UpdateWasteLog)
-			waste.DELETE("/:id", middleware.AdminOnly(), h.DeleteWasteLog)
+			waste.POST("", middleware.StaffOrAdmin(), h.CreateWasteLog)
+			waste.PUT("/:id", middleware.StaffOrAdmin(), h.UpdateWasteLog)
+			waste.DELETE("/:id", middleware.StaffOrAdmin(), h.DeleteWasteLog)
 		}
 
 		// Sustainability routes
@@ -219,6 +250,10 @@ func main() {
 
 		// Audit log routes (admin only)
 		protected.GET("/audit-logs", middleware.AdminOnly(), h.GetAuditLogs)
+
+		// Operating Hours routes (US-AM-4)
+		protected.GET("/operating-hours", h.GetOperatingHours)
+		protected.PUT("/operating-hours/:id", middleware.AdminOnly(), h.UpdateOperatingHours)
 	}
 
 	// Get port from environment or default
