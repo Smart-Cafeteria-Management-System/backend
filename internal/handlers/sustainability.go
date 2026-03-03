@@ -24,11 +24,23 @@ type SustainabilityMetrics struct {
 	SustainabilityScore    int     `json:"sustainabilityScore"` // 0-100
 }
 
+// MealBreakdown represents per-meal-type waste and demand analysis
+type MealBreakdown struct {
+	MealType         string  `json:"mealType"`
+	TotalPrepared    int     `json:"totalPrepared"`
+	TotalWasted      int     `json:"totalWasted"`
+	WastePercent     float64 `json:"wastePercent"`
+	TotalServed      int     `json:"totalServed"`
+	AvgDailyDemand   float64 `json:"avgDailyDemand"`
+}
+
 // SustainabilityReport represents a detailed sustainability report
 type SustainabilityReport struct {
 	GeneratedAt          time.Time              `json:"generatedAt"`
 	Period               string                 `json:"period"`
+	PeriodLabel          string                 `json:"periodLabel"`
 	Metrics              SustainabilityMetrics  `json:"metrics"`
+	MealBreakdown        []MealBreakdown        `json:"mealBreakdown"`
 	WasteTrends          []WasteTrend           `json:"wasteTrends"`
 	Recommendations      []string               `json:"recommendations"`
 	ImprovementAreas     []string               `json:"improvementAreas"`
@@ -40,6 +52,43 @@ type WasteTrend struct {
 	Date            string  `json:"date"`
 	WastePercent    float64 `json:"wastePercent"`
 	ForecastAccuracy float64 `json:"forecastAccuracy"`
+}
+
+// parsePeriod extracts start/end dates from query params (period=7d|30d|90d|custom, startDate, endDate)
+func parsePeriod(c *gin.Context) (time.Time, time.Time, string) {
+	period := c.DefaultQuery("period", "30d")
+	endDate := time.Now()
+	var startDate time.Time
+	var label string
+
+	switch period {
+	case "7d":
+		startDate = endDate.AddDate(0, 0, -7).Truncate(24 * time.Hour)
+		label = "Last 7 Days"
+	case "90d":
+		startDate = endDate.AddDate(0, 0, -90).Truncate(24 * time.Hour)
+		label = "Last 90 Days"
+	case "custom":
+		if s := c.Query("startDate"); s != "" {
+			if t, err := time.Parse("2006-01-02", s); err == nil {
+				startDate = t
+			}
+		}
+		if e := c.Query("endDate"); e != "" {
+			if t, err := time.Parse("2006-01-02", e); err == nil {
+				endDate = t.Add(24*time.Hour - time.Nanosecond)
+			}
+		}
+		if startDate.IsZero() {
+			startDate = endDate.AddDate(0, 0, -30).Truncate(24 * time.Hour)
+		}
+		label = startDate.Format("Jan 2") + " – " + endDate.Format("Jan 2, 2006")
+	default: // 30d
+		startDate = endDate.AddDate(0, 0, -30).Truncate(24 * time.Hour)
+		label = "Last 30 Days"
+	}
+
+	return startDate, endDate, label
 }
 
 // GetSustainabilityMetrics returns current sustainability metrics
@@ -142,9 +191,9 @@ func (h *Handler) GetSustainabilityMetrics(c *gin.Context) {
 }
 
 // GetSustainabilityReport returns a detailed sustainability report
+// Accepts ?period=7d|30d|90d|custom and ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD for custom periods.
 func (h *Handler) GetSustainabilityReport(c *gin.Context) {
-	days := 30
-	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	startDate, _, periodLabel := parsePeriod(c)
 
 	// Get metrics first
 	var wasteLogs []models.WasteLog
@@ -251,15 +300,40 @@ func (h *Handler) GetSustainabilityReport(c *gin.Context) {
 		achievements = append(achievements, fmt.Sprintf("Environmental Impact: Prevented %.1f kg of CO2 equivalent emissions this month.", co2Saved))
 	}
 
+	// Build per-meal-type breakdown
+	mealBreakdownMap := make(map[string]MealBreakdown)
+	for _, log := range wasteLogs {
+		mt := string(log.MealType)
+		entry := mealBreakdownMap[mt]
+		entry.MealType = mt
+		entry.TotalPrepared += log.PreparedQuantity
+		entry.TotalWasted += log.WastedQuantity
+		mealBreakdownMap[mt] = entry
+	}
+	var mealBreakdowns []MealBreakdown
+	for _, mb := range mealBreakdownMap {
+		if mb.TotalPrepared > 0 {
+			mb.WastePercent = math.Round(float64(mb.TotalWasted)/float64(mb.TotalPrepared)*10000) / 100
+		}
+		mealBreakdowns = append(mealBreakdowns, mb)
+	}
+
+	score := int((avgAccuracy * 0.4) + ((100 - wastePercent) * 0.6))
+	if score > 100 {
+		score = 100
+	}
+
 	report := SustainabilityReport{
 		GeneratedAt:      time.Now(),
 		Period:           startDate.Format("2006-01-02") + " to " + time.Now().Format("2006-01-02"),
+		PeriodLabel:      periodLabel,
 		Metrics: SustainabilityMetrics{
 			WasteReductionPercent:  math.Max(0, 20-wastePercent),
 			FoodUtilizationPercent: 100 - wastePercent,
 			ForecastAccuracy:       avgAccuracy,
-			SustainabilityScore:    int((avgAccuracy * 0.4) + ((100 - wastePercent) * 0.6)),
+			SustainabilityScore:    score,
 		},
+		MealBreakdown:    mealBreakdowns,
 		WasteTrends:      trends,
 		Recommendations:  recommendations,
 		ImprovementAreas: improvements,
@@ -448,10 +522,9 @@ func (h *Handler) GetPreparationRecommendations(c *gin.Context) {
 }
 
 // DownloadSustainabilityCSV generates a downloadable CSV sustainability report
+// Accepts ?period=7d|30d|90d|custom and ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
 func (h *Handler) DownloadSustainabilityCSV(c *gin.Context) {
-	days := 30
-	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
-	endDate := time.Now()
+	startDate, endDate, _ := parsePeriod(c)
 
 	// --- Gather data (same logic as GetSustainabilityReport) ---
 	var wasteLogs []models.WasteLog
