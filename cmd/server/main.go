@@ -166,6 +166,7 @@ func main() {
 			queue.GET("/status", h.GetQueueStatus)
 			queue.GET("/my-token", h.GetMyToken)
 			queue.GET("/history", h.GetQueueHistory)
+			queue.GET("/fairness", h.GetFairnessIndicators)
 			queue.POST("/call-next", middleware.StaffOrAdmin(), h.CallNextToken)
 			queue.PUT("/:id/serve", middleware.StaffOrAdmin(), h.ServeToken)
 		}
@@ -230,6 +231,7 @@ func main() {
 			incentives.PUT("/rules/:id", middleware.AdminOnly(), h.UpdateIncentiveRule)
 			incentives.DELETE("/rules/:id", middleware.AdminOnly(), h.DeleteIncentiveRule)
 			incentives.GET("/abuse-report", middleware.AdminOnly(), h.GetAbuseReport)
+			incentives.GET("/behavior-trends", middleware.AdminOnly(), h.GetBehaviorTrends)
 			incentives.POST("/apply-to-slots", middleware.AdminOnly(), h.ApplyIncentivesToSlots)
 		}
 
