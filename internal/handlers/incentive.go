@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -451,5 +452,150 @@ func (h *Handler) GetAbuseReport(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"abuseRecords": records,
 		"threshold":    "30% no-show rate with 3+ bookings",
+	})
+}
+
+// === Behavior Trend Analytics (US-IN-8) ===
+
+// WeeklyBehaviorData represents behavior data for one week
+type WeeklyBehaviorData struct {
+	WeekStart      string  `json:"weekStart"`
+	WeekEnd        string  `json:"weekEnd"`
+	TotalBookings  int     `json:"totalBookings"`
+	Attended       int     `json:"attended"`
+	NoShows        int     `json:"noShows"`
+	PointsAwarded  int     `json:"pointsAwarded"`
+	AttendanceRate float64 `json:"attendanceRate"`
+}
+
+// BehaviorSummary represents overall behavior analysis
+type BehaviorSummary struct {
+	TotalUsers         int     `json:"totalUsers"`
+	AvgAttendanceRate  float64 `json:"avgAttendanceRate"`
+	TrendDirection     string  `json:"trendDirection"` // "improving", "declining", "stable"
+	TotalPointsAwarded int     `json:"totalPointsAwarded"`
+	TotalNoShows       int     `json:"totalNoShows"`
+}
+
+// GetBehaviorTrends returns time-series behavioral analysis (admin only)
+// Accepts ?days=N (default 30) to control the analysis window.
+func (h *Handler) GetBehaviorTrends(c *gin.Context) {
+	days := 30
+	if d := c.Query("days"); d != "" {
+		if _, err := fmt.Sscanf(d, "%d", &days); err != nil || days < 7 {
+			days = 30
+		}
+	}
+
+	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+
+	// Fetch attendance logs for the period
+	var logs []models.AttendanceLog
+	h.DB.Where("created_at >= ?", startDate).Order("created_at").Find(&logs)
+
+	// Group logs into weekly buckets
+	weeklyMap := make(map[string]*WeeklyBehaviorData)
+	for _, log := range logs {
+		// Calculate the Monday of the week for this log
+		weekday := log.CreatedAt.Weekday()
+		offset := int(weekday - time.Monday)
+		if offset < 0 {
+			offset += 7
+		}
+		monday := log.CreatedAt.AddDate(0, 0, -offset).Truncate(24 * time.Hour)
+		key := monday.Format("2006-01-02")
+
+		if weeklyMap[key] == nil {
+			weeklyMap[key] = &WeeklyBehaviorData{
+				WeekStart: monday.Format("2006-01-02"),
+				WeekEnd:   monday.AddDate(0, 0, 6).Format("2006-01-02"),
+			}
+		}
+
+		week := weeklyMap[key]
+		week.TotalBookings++
+		week.PointsAwarded += log.PointsAwarded
+		if log.Status == models.AttendanceAttended {
+			week.Attended++
+		} else if log.Status == models.AttendanceNoShow {
+			week.NoShows++
+		}
+	}
+
+	// Build sorted weekly data and compute rates
+	var weeklyData []WeeklyBehaviorData
+	var keys []string
+	for k := range weeklyMap {
+		keys = append(keys, k)
+	}
+	// Sort keys chronologically
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[j] < keys[i] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	for _, k := range keys {
+		w := weeklyMap[k]
+		if w.TotalBookings > 0 {
+			w.AttendanceRate = float64(w.Attended) / float64(w.TotalBookings) * 100
+		}
+		weeklyData = append(weeklyData, *w)
+	}
+
+	// Compute overall summary
+	totalAttended := 0
+	totalNoShows := 0
+	totalPoints := 0
+	for _, w := range weeklyData {
+		totalAttended += w.Attended
+		totalNoShows += w.NoShows
+		totalPoints += w.PointsAwarded
+	}
+
+	totalBookings := totalAttended + totalNoShows
+	avgAttendance := 0.0
+	if totalBookings > 0 {
+		avgAttendance = float64(totalAttended) / float64(totalBookings) * 100
+	}
+
+	// Determine trend direction by comparing first half vs second half
+	trendDirection := "stable"
+	if len(weeklyData) >= 2 {
+		mid := len(weeklyData) / 2
+		firstHalfRate := 0.0
+		secondHalfRate := 0.0
+		for _, w := range weeklyData[:mid] {
+			firstHalfRate += w.AttendanceRate
+		}
+		for _, w := range weeklyData[mid:] {
+			secondHalfRate += w.AttendanceRate
+		}
+		firstHalfRate /= float64(mid)
+		secondHalfRate /= float64(len(weeklyData) - mid)
+
+		if secondHalfRate > firstHalfRate+5 {
+			trendDirection = "improving"
+		} else if secondHalfRate < firstHalfRate-5 {
+			trendDirection = "declining"
+		}
+	}
+
+	// Count unique users
+	var uniqueUsers int64
+	h.DB.Model(&models.AttendanceLog{}).Where("created_at >= ?", startDate).
+		Distinct("user_id").Count(&uniqueUsers)
+
+	c.JSON(http.StatusOK, gin.H{
+		"weeklyTrends": weeklyData,
+		"summary": BehaviorSummary{
+			TotalUsers:         int(uniqueUsers),
+			AvgAttendanceRate:  avgAttendance,
+			TrendDirection:     trendDirection,
+			TotalPointsAwarded: totalPoints,
+			TotalNoShows:       totalNoShows,
+		},
+		"period": fmt.Sprintf("Last %d days", days),
 	})
 }
