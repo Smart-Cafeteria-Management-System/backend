@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -271,4 +273,212 @@ func (h *Handler) ServeToken(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, token)
+}
+
+// === Fairness Indicators (US-ET-8) ===
+
+// SlotFairnessMetric represents fairness metrics for a single slot
+type SlotFairnessMetric struct {
+	SlotID       string  `json:"slotId"`
+	Date         string  `json:"date"`
+	MealType     string  `json:"mealType"`
+	TokensServed int     `json:"tokensServed"`
+	AvgWaitMin   float64 `json:"avgWaitMinutes"`
+	MaxWaitMin   float64 `json:"maxWaitMinutes"`
+	MinWaitMin   float64 `json:"minWaitMinutes"`
+	StdDevWait   float64 `json:"stdDevWaitMinutes"`
+}
+
+// FairnessResponse represents the complete fairness analysis
+type FairnessResponse struct {
+	FairnessScore    int                  `json:"fairnessScore"`    // 0-100, higher = more equitable
+	FIFOCompliance   float64              `json:"fifoCompliance"`   // % of tokens served in correct order
+	AvgWaitMinutes   float64              `json:"avgWaitMinutes"`
+	TotalTokens      int                  `json:"totalTokens"`
+	SlotMetrics      []SlotFairnessMetric `json:"slotMetrics"`
+	Period           string               `json:"period"`
+}
+
+// GetFairnessIndicators computes per-slot fairness metrics and overall equity score
+// Accepts ?days=N (default 7) to control the analysis window.
+func (h *Handler) GetFairnessIndicators(c *gin.Context) {
+	days := 7
+	if d := c.Query("days"); d != "" {
+		if _, err := fmt.Sscanf(d, "%d", &days); err != nil || days < 1 {
+			days = 7
+		}
+	}
+
+	startDate := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+
+	// Fetch all served tokens with their slot details in the period
+	var tokens []models.QueueToken
+	h.DB.Preload("Booking.Slot").
+		Joins("JOIN bookings ON bookings.id = queue_tokens.booking_id").
+		Joins("JOIN meal_slots ON meal_slots.id = bookings.slot_id").
+		Where("meal_slots.date >= ?", startDate).
+		Where("queue_tokens.status = ?", models.TokenServed).
+		Order("queue_tokens.created_at").
+		Find(&tokens)
+
+	if len(tokens) == 0 {
+		c.JSON(http.StatusOK, FairnessResponse{
+			FairnessScore:  100,
+			FIFOCompliance: 100,
+			Period:         fmt.Sprintf("Last %d days", days),
+		})
+		return
+	}
+
+	// Group tokens by slot and compute wait times
+	type slotData struct {
+		slotID   string
+		date     string
+		mealType string
+		waits    []float64 // wait times in minutes
+		times    []time.Time // creation times for FIFO check
+		served   []time.Time // served times for FIFO check
+	}
+
+	slotMap := make(map[string]*slotData)
+
+	for _, t := range tokens {
+		slotKey := t.Booking.SlotID.String()
+		if slotMap[slotKey] == nil {
+			slotMap[slotKey] = &slotData{
+				slotID:   slotKey,
+				date:     t.Booking.Slot.Date.Format("2006-01-02"),
+				mealType: string(t.Booking.Slot.MealType),
+			}
+		}
+		sd := slotMap[slotKey]
+
+		// Calculate wait time: from token creation to when it was called/served
+		waitEnd := t.CreatedAt
+		if t.CalledAt != nil {
+			waitEnd = *t.CalledAt
+		}
+		waitMinutes := waitEnd.Sub(t.CreatedAt).Minutes()
+		if waitMinutes < 0 {
+			waitMinutes = 0
+		}
+
+		sd.waits = append(sd.waits, waitMinutes)
+		sd.times = append(sd.times, t.CreatedAt)
+		if t.CalledAt != nil {
+			sd.served = append(sd.served, *t.CalledAt)
+		} else {
+			sd.served = append(sd.served, t.CreatedAt)
+		}
+	}
+
+	// Compute per-slot metrics
+	var slotMetrics []SlotFairnessMetric
+	var allWaits []float64
+	fifoCorrect := 0
+	fifoTotal := 0
+
+	for _, sd := range slotMap {
+		if len(sd.waits) == 0 {
+			continue
+		}
+
+		sum := 0.0
+		maxW := 0.0
+		minW := math.MaxFloat64
+		for _, w := range sd.waits {
+			sum += w
+			if w > maxW {
+				maxW = w
+			}
+			if w < minW {
+				minW = w
+			}
+		}
+		avg := sum / float64(len(sd.waits))
+
+		// Standard deviation
+		variance := 0.0
+		for _, w := range sd.waits {
+			variance += (w - avg) * (w - avg)
+		}
+		stdDev := 0.0
+		if len(sd.waits) > 1 {
+			stdDev = math.Sqrt(variance / float64(len(sd.waits)-1))
+		}
+
+		slotMetrics = append(slotMetrics, SlotFairnessMetric{
+			SlotID:       sd.slotID,
+			Date:         sd.date,
+			MealType:     sd.mealType,
+			TokensServed: len(sd.waits),
+			AvgWaitMin:   math.Round(avg*100) / 100,
+			MaxWaitMin:   math.Round(maxW*100) / 100,
+			MinWaitMin:   math.Round(minW*100) / 100,
+			StdDevWait:   math.Round(stdDev*100) / 100,
+		})
+
+		allWaits = append(allWaits, sd.waits...)
+
+		// Check FIFO compliance: tokens created earlier should be served earlier
+		for i := 1; i < len(sd.times); i++ {
+			fifoTotal++
+			if sd.served[i].After(sd.served[i-1]) || sd.served[i].Equal(sd.served[i-1]) {
+				fifoCorrect++
+			}
+		}
+	}
+
+	// Overall statistics
+	overallAvg := 0.0
+	if len(allWaits) > 0 {
+		sum := 0.0
+		for _, w := range allWaits {
+			sum += w
+		}
+		overallAvg = sum / float64(len(allWaits))
+	}
+
+	fifoCompliance := 100.0
+	if fifoTotal > 0 {
+		fifoCompliance = float64(fifoCorrect) / float64(fifoTotal) * 100
+	}
+
+	// Compute fairness score (0-100)
+	// Based on: low wait time variance (40%), high FIFO compliance (40%), low max-min gap (20%)
+	varianceScore := 100.0
+	if len(allWaits) > 1 {
+		allVariance := 0.0
+		for _, w := range allWaits {
+			allVariance += (w - overallAvg) * (w - overallAvg)
+		}
+		stdDev := math.Sqrt(allVariance / float64(len(allWaits)-1))
+		// Lower stddev = higher score; stddev > 10 min = poor
+		varianceScore = math.Max(0, 100-stdDev*10)
+	}
+
+	maxMinGapScore := 100.0
+	if len(allWaits) > 0 {
+		maxW, minW := 0.0, math.MaxFloat64
+		for _, w := range allWaits {
+			if w > maxW { maxW = w }
+			if w < minW { minW = w }
+		}
+		gap := maxW - minW
+		maxMinGapScore = math.Max(0, 100-gap*5)
+	}
+
+	fairnessScore := int(varianceScore*0.4 + fifoCompliance*0.4 + maxMinGapScore*0.2)
+	if fairnessScore > 100 {
+		fairnessScore = 100
+	}
+
+	c.JSON(http.StatusOK, FairnessResponse{
+		FairnessScore:  fairnessScore,
+		FIFOCompliance: math.Round(fifoCompliance*100) / 100,
+		AvgWaitMinutes: math.Round(overallAvg*100) / 100,
+		TotalTokens:    len(tokens),
+		SlotMetrics:    slotMetrics,
+		Period:         fmt.Sprintf("Last %d days", days),
+	})
 }
