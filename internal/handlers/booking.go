@@ -48,13 +48,28 @@ func (h *Handler) GetBookings(c *gin.Context) {
 	c.JSON(http.StatusOK, bookings)
 }
 
-// GetMyBookings returns bookings for the authenticated user
+// GetMyBookings returns bookings for the authenticated user.
+// Confirmed bookings from past slot dates are automatically treated as expired
+// so they don't appear as "active" on the dashboard.
 func (h *Handler) GetMyBookings(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
+
+	today := time.Now().Format("2006-01-02")
+
+	// Auto-expire confirmed bookings whose slot date has already passed
+	h.DB.Exec(`
+		UPDATE bookings
+		SET status = 'no-show', updated_at = NOW()
+		WHERE user_id = ?
+		  AND status = 'confirmed'
+		  AND slot_id IN (
+		      SELECT id FROM meal_slots WHERE date < ?
+		  )
+	`, userID, today)
 
 	var bookings []models.Booking
 	if err := h.DB.Preload("Slot").Preload("Items").
