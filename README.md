@@ -4,132 +4,95 @@
 [![Database](https://img.shields.io/badge/database-Supabase-3ECF8E?style=flat&logo=supabase)](https://supabase.com/)
 [![Web Framework](https://img.shields.io/badge/framework-Gin-0081D5?style=flat&logo=gin)](https://gin-gonic.com/)
 
-An intelligent cafeteria management platform designed to optimize food service operations, minimize waste, and improve student experience through AI-driven insights and real-time queue management.
+The core API and business logic gateway for the Smart Cafeteria Management System.
 
 ---
 
-## 🍱 Project Context: Epic Breakdown
-This backend satisfies the requirements across 6 core epics:
-1. **User Management**: Identity, access, and profile control.
-2. **Admin Management**: Centralized system control and configuration.
-3. **Queue & Booking**: Meal slot pre-booking and token-based FIFO queues.
-4. **Demand Forecasting**: AI-powered demand prediction and sustainability alerts.
-5. **Incentive Design**: Point-based behavior shaping for off-peak usage.
-6. **Ethics & Transparency**: Enforced fairness through immutable system rules.
+## 🏗️ 1. Architecture Overview (System Design)
+
+The backend acts as the central orchestrator for the entire organization.
+
+```mermaid
+graph TD
+    UI[Frontend Client: React.js] -->|REST / JSON| BE[Go + Fiber API Gateway]
+    BE -->|SQL queries| DB[(PostgreSQL)]
+    BE <-->|REST over internal network| ML[ML Prediction Microservice]
+    
+    subgraph Business Logic Layer
+        Auth[Authentication & JWT]
+        Queue[FIFO Queue Manager]
+        Order[Order Processing]
+        Audit[Immutable Audit Logs]
+    end
+    BE --- Auth
+    BE --- Queue
+    BE --- Order
+    BE --- Audit
+```
+
+- **Microservice Design:** The backend talks to the Python ML model over a REST protocol.
+- **Database:** PostgreSQL (via Supabase) serves as the persistent truth for users, rules, orders, and audits.
+- **Security:** Requires `sslmode=require` for all database interactions. Strict enforcement of data immutability for audit logs.
 
 ---
 
-## 🛠 Tech Stack
-- **Language**: Go (Golang)
-- **Framework**: Gin Gonic (High Performance HTTP)
-- **Database**: PostgreSQL (Supplied via Supabase)
-- **ORM**: GORM (Object Relational Mapping)
-- **Authentication**: JWT (JSON Web Tokens) with Bcrypt hashing + TOTP 2FA
-- **Containerization**: Docker & Docker Compose
+## 💻 2. Developer Documentation
 
----
+### Prerequisites
+- [Go](https://golang.org/) (1.23+)
+- Docker Desktop
+- A valid `.env` file containing Supabase DB credentials.
 
-## 🚀 Quick Start
-
-### Option 1: Docker (Recommended)
-```powershell
-# 1. Copy .env.example to .env and fill in your Supabase details
-
-# 2. Build and run the container
+### Local Setup
+**Option 1: Docker (Recommended)**
+```bash
 docker build -t cafeteria-backend .
-docker run -d --name cafeteria-backend -p 5000:5000 --env-file .env cafeteria-backend
-
-# 3. View logs
-docker logs -f cafeteria-backend
+docker run -d -p 5000:5000 --env-file .env cafeteria-backend
 ```
 
-### Option 2: Local Development
-```powershell
-# 1. Set environment variables (copy .env.example to .env)
-
-# 2. Run the server with hot-reload
+**Option 2: Native Go**
+```bash
+go mod download
 go run cmd/server/main.go
+# (Or use `air` for hot-reloading)
 ```
 
-The server starts at `http://localhost:5000`.
+### Directory Structure
+- `cmd/server/`: The main entry point. Initializes Fiber and Database.
+- `internal/handlers/`: The core business logic controllers (Booking, Auth, Menu).
+- `internal/middleware/`: JWT verification, Role checks, CORS.
+- `internal/database/`: PostgreSQL connection and seeding scripts.
+
+### CI/CD Pipeline
+Configured via `.github/workflows/ci.yml`. Triggers on push/PR to `main`.
+1. **Lint/Vet:** Runs `go vet ./...`
+2. **Build:** Compiles binary for Ubuntu.
+3. **Dockerize:** Builds the production `smart-cafeteria-backend` image.
 
 ---
 
-## 📖 API Documentation (Key Endpoints)
+## 🔌 3. API Documentation (Reference)
 
-### **Authentication**
-- `POST /api/auth/register`: Create a new user account.
-- `POST /api/auth/login`: Authenticate and receive a JWT token.
-- `POST /api/auth/totp/verify`: Verify TOTP 2FA code.
-- `POST /api/auth/totp/setup`: Initial 2FA enrollment (QR code generation).
-- `POST /api/auth/totp/confirm`: Confirm first-time 2FA setup.
+All protected operations require a valid JSON Web Token in the header: 
+`Authorization: Bearer <token>`
 
-### **Booking & Queue**
-- `GET /api/slots/today`: View available meal slots for the current day.
-- `POST /api/bookings`: Pre-book a meal slot.
-- `GET /api/queue/status`: Real-time transparent view of the service queue.
-- `GET /api/queue/my-token`: Personal queue position and dynamic wait time.
+### Authentication & Users
+- `POST /api/auth/login` : Authenticate. Returns JWT.
+- `POST /api/auth/totp/setup` : Init 2FA process.
+- `GET /api/admin/users` : (Admin) List all users.
 
-### **Menu Management**
-- `GET /api/menu`: Browse all menu items.
-- `POST /api/menu`: Add new menu item (Admin only).
-- `PUT /api/menu/:id`: Update a menu item (Admin only).
-- `DELETE /api/menu/:id`: Remove a menu item (Admin only).
+### Orders & Tokens
+- `POST /api/bookings` : Create a meal order. Automates point redemption and generates a token.
+- `GET /api/queue/my-token` : Get specific queue position and wait time.
+- `GET /api/queue/status` : View overall queue length (FIFO).
 
-### **Intelligence & Sustainability**
-- `GET /api/forecasts/week`: 1-week demand forecast generated by the ML model.
-- `GET /api/forecasts/day`: Single-day detailed forecast.
-- `GET /api/sustainability/report`: AI recommendations for preparation quantities to minimize waste.
-
-### **Admin**
-- `GET /api/admin/users`: List all users.
-- `GET /api/admin/audit-logs`: View all security audit events.
-- `GET /api/admin/analytics`: System-wide analytics and metrics.
+### AI & Operations
+- `GET /api/forecasts/day` : Fetches demand predictions by calling the Python ML microservice.
+- `GET /api/admin/audit-logs` : Fetch immutable system modification logs.
 
 ---
 
-## 📂 Directory Structure
-```
-backend/
-├── cmd/
-│   ├── server/           # App entry point (main.go)
-│   └── cleanup/          # Database cleanup utility
-├── internal/
-│   ├── config/           # Environment variables & constants
-│   ├── database/         # Supabase connection & granular seeding logic
-│   ├── handlers/         # Core business logic (Epics 1-6)
-│   │   ├── auth.go       # Authentication & TOTP 2FA
-│   │   ├── booking.go    # Meal booking operations
-│   │   ├── queue.go      # Queue management & token logic
-│   │   ├── menu.go       # Menu CRUD operations
-│   │   ├── forecast.go   # ML model integration & forecasting
-│   │   ├── analytics.go  # Analytics & reporting
-│   │   └── ...
-│   ├── middleware/        # Auth (JWT) & CORS protection
-│   └── models/           # Database structure & entity relationships
-└── Dockerfile
-```
-
----
-
-## 🔐 Security & Ethics
-- **FIFO Enforcement**: The queue system strictly prevents manual reordering or favoritism.
-- **SSL Required**: Communication with Supabase is encrypted using `sslmode=require`.
-- **RBAC**: Role-Based Access Control ensures only Admins can access operational reports.
-- **Two-Factor Authentication (TOTP)**: Mandatory 2FA on login using TOTP (Google Authenticator / Authy compatible).
-- **Audit Logs**: All security-sensitive actions (logins, 2FA changes, blocked accounts) are recorded with timestamps and IP addresses.
-
----
-
-## ✅ Completed Backlog
-
-| # | Feature | Description | Status |
-|---|---------|-------------|--------|
-| 1 | **ML-Based Demand Forecasting** | Integrated Python ML model to predict daily cafeteria demand, with real-time weather data integration via Open-Meteo API. | ✅ Completed |
-| 2 | **Incentive & Addon Redemption** | Gamified points system allowing students to claim free add-ons based on booking history. | ✅ Completed |
-| 3 | **Real-Time Queue Management** | Live queue status view with token-based FIFO tracking and dynamic wait times. | ✅ Completed |
-| 4 | **Role-Based Dashboards (RBAC)** | Distinct UI experiences for Admin, Staff, and Student roles with protected routes. | ✅ Completed |
-| 5 | **Waste Log & Analytics** | Comprehensive analytics dashboard tracking food waste logs and daily attendance metrics. | ✅ Completed |
-| 6 | **Mandatory Two-Factor Auth** | TOTP 2FA required on first login. Audit logs track all authentication events. | ✅ Completed |
-| 7 | **Dark Mode / Night Theme** | One-click theme toggle (🌙/☀️) with localStorage persistence across all pages. | ✅ Completed |
-| 8 | **Authentic ML Training Data** | Real weather data from Open-Meteo for Coimbatore, academic calendar integration, ~81.5% model accuracy. | ✅ Completed |
+## 🛡️ 4. System Integrity (Ethics)
+1. **FIFO Queue:** Hard-coded sequential processing. No manual reordering permitted.
+2. **Audit Trails:** All setting changes, cancellations, and logins are logged with timestamps.
+3. **Incentive Limits:** Backend enforces rate limits on daily attendance rewards to prevent abuse (`#10643`).
