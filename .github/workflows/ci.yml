@@ -1,7 +1,7 @@
 # ============================================================
 # Smart Cafeteria Backend — CI/CD Pipeline
 # Triggers on push and pull requests to main branch
-# Steps: Checkout → Setup Go → Install Deps → Build → Vet
+# Steps: Checkout → Setup Go → Install Deps → Vet → Test → Build
 # ============================================================
 
 name: Backend CI/CD
@@ -14,7 +14,7 @@ on:
 
 jobs:
   build:
-    name: Build & Verify
+    name: Build, Test & Verify
     runs-on: ubuntu-latest
 
     steps:
@@ -51,7 +51,11 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
-      # 7. Build the application
+      # 7. Run tests
+      - name: Test
+        run: go test ./... -v
+
+      # 8. Build the application
       - name: Build
         run: go build -v ./cmd/server/
 
