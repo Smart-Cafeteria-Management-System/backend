@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/smart-cafeteria/backend/internal/middleware"
@@ -168,6 +169,7 @@ func (h *Handler) ChangeUserRole(c *gin.Context) {
 		UserID:    &adminID,
 		Details:   "Changed role of " + user.Email + " from " + string(oldRole) + " to " + req.Role,
 		IPAddress: c.ClientIP(),
+		CreatedAt: time.Now().UTC().Add(5*time.Hour + 30*time.Minute),
 	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Role updated successfully", "user": user})

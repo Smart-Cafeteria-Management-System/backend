@@ -332,6 +332,7 @@ func (h *Handler) ForgotPassword(c *gin.Context) {
 		Details:   "Password reset token generated",
 		IPAddress: c.ClientIP(),
 		Success:   true,
+		CreatedAt: time.Now().UTC().Add(5*time.Hour + 30*time.Minute),
 	})
 
 	// In a production system, this token would be sent via email.
@@ -405,6 +406,7 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		Details:   "Password was reset via recovery token",
 		IPAddress: c.ClientIP(),
 		Success:   true,
+		CreatedAt: time.Now().UTC().Add(5*time.Hour + 30*time.Minute),
 	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Password has been reset successfully. You can now log in with your new password."})

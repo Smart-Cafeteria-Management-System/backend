@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,6 +30,7 @@ func LogActivity(db *gorm.DB, c *gin.Context, userID *uuid.UUID, userEmail, acti
 		IPAddress: c.ClientIP(),
 		UserAgent: c.Request.UserAgent(),
 		Success:   success,
+		CreatedAt: time.Now().UTC().Add(5*time.Hour + 30*time.Minute),
 	}
 	// Intentionally ignore error — audit log failure should not break the request
 	db.Create(&entry)
